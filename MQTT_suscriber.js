@@ -1,21 +1,24 @@
 require('dotenv').config()
 
-const Koa = require('koa');
-const Router = require('koa-router');
 const mqtt = require('mqtt')
 
-const app = new Koa();
-const router = new Router();
+const url = `mqtt://${process.env.HOST}:${process.env.PORT}`;
 
-// Lista en memoria de propiedades recibidas
-let properties = [];
-
-const client = mqtt.connect({
-    host: process.env.HOST,
-    port: process.env.PORT,
-    username: process.env.USER,
+const options = {
+    // Clean session
+    clean: true,
+    connectTimeout: 4000,
+    // Authentication
+    username: process.env.USER_mqtt,
     password: process.env.PASSWORD,
-});
+}
+
+console.log('Conectando al broker MQTT en %s\n', url);
+
+console.log('Options:');
+console.log(options);
+
+const client = mqtt.connect(url, options)
 
 client.on('connect', () => {
     console.log('Conectado al broker');
@@ -23,7 +26,15 @@ client.on('connect', () => {
         if (!err) {
             console.log('Suscrito a properties/info');
         }
+        else {
+            console.error('Error al suscribirse:', err);
+        }
     });
+});
+
+client.on('error', (err) => {
+    console.error('❌ Error de conexión MQTT:', err);
+    client.end();
 });
 
 client.on('message', (topic, message) => {
@@ -31,23 +42,8 @@ client.on('message', (topic, message) => {
         try {
             const property = JSON.parse(message.toString());
             console.log('Propiedad recibida:', property);
-            properties.push(property);
         } catch (err) {
             console.error('Error parseando mensaje', err);
         }
     }
-});
-
-// Endpoint para ver las propiedades
-router.get('/properties', (ctx) => {
-    ctx.body = properties;
-});
-
-app.use(router.routes());
-app.use(router.allowedMethods());
-
-// Levantar servidor
-const PORT = process.env.APP_PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
 });
