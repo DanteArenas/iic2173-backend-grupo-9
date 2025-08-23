@@ -17,17 +17,6 @@ const dbClient = new Client({
 dbClient.connect()
     .then(() => {
         console.log('✅ Conectado a PostgreSQL');
-        // Crear tabla si no existe
-        return dbClient.query(`
-            CREATE TABLE IF NOT EXISTS properties (
-                id SERIAL PRIMARY KEY,
-                data JSONB NOT NULL,
-                received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-    })
-    .then(() => {
-        console.log('📋 Tabla properties lista');
     })
     .catch(err => {
         console.error('❌ Error conectando a PostgreSQL:', err);
@@ -72,10 +61,29 @@ client.on('message', async (topic, message) => {
             console.log('Propiedad recibida:', property);
 
             // Guardar en PostgreSQL
-            await dbClient.query(
-                'INSERT INTO properties (data) VALUES ($1)',
-                [JSON.stringify(property)]
+
+            const result = await dbClient.query(
+                "SELECT id FROM properties WHERE data->>'url' = $1",
+                [property.url]
             );
+
+            if (result.rows.length > 0) {
+                await dbClient.query(
+                    `UPDATE properties 
+                    SET visits = visits + 1, 
+                        updated_at = $2
+                    WHERE id = $1`,
+                    [result.rows[0].id, property.timestamp]
+                );
+                console.log("♻️ Propiedad repetida, visitas incrementadas y fecha actualizada:", property.name);
+            } else {
+                await dbClient.query(
+                    "INSERT INTO properties (data, updated_at) VALUES ($1, $2)",
+                    [JSON.stringify(property), property.timestamp]
+                );
+                console.log("✅ Propiedad nueva guardada:", property.url);
+            }
+
             console.log('✅ Propiedad guardada en PostgreSQL');
         } catch (err) {
             console.error('❌ Error procesando mensaje:', err);

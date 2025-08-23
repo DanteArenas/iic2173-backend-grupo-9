@@ -20,6 +20,9 @@ app.pool = new Pool({
 
 const router = new Router();
 
+// FALTA estandarizar las monedas de los precios
+
+// RF1, 3 y 4
 // get /properties
 router.get('/properties', async ctx => {
     try {
@@ -42,14 +45,14 @@ router.get('/properties', async ctx => {
 
         if (date) {
             queryParams.push(date);
-            whereClauses.push(`DATE(received_at) = $${queryParams.length}`);
+            whereClauses.push(`DATE((data->>'timestamp')::timestamp) = $${queryParams.length}`);
         }
 
         const whereSQL = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
         // Consultar propiedades filtradas con paginación
         const result = await ctx.app.pool.query(
-            `SELECT * FROM properties ${whereSQL} ORDER BY received_at DESC LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`,
+            `SELECT * FROM properties ${whereSQL} ORDER BY (data->>'timestamp')::timestamp DESC LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`,
             [...queryParams, parseInt(limit), parseInt(offset)]
         );
 
@@ -57,6 +60,31 @@ router.get('/properties', async ctx => {
 
     } catch (err) {
         console.error('Error fetching properties:', err);
+        ctx.status = 500;
+        ctx.body = { error: 'Internal server error' };
+    }
+});
+
+// RF2
+// /properties/{:id}
+router.get('/properties/:id', async ctx => {
+    const { id } = ctx.params;
+
+    try {
+        const result = await ctx.app.pool.query(
+            'SELECT * FROM properties WHERE id = $1',
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            ctx.status = 404;
+            ctx.body = { error: 'Property not found' };
+            return;
+        }
+
+        ctx.body = result.rows[0];
+    } catch (err) {
+        console.error('Error fetching property:', err);
         ctx.status = 500;
         ctx.body = { error: 'Internal server error' };
     }
