@@ -1,0 +1,30 @@
+{
+  "name": "e0-dantearenas",
+  "version": "1.0.0",
+  "description": "***Fecha de entrega:** 01/09/2025 - 3 Semanas*",
+  "main": "MQTT_suscriber.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iic2173/e0-DanteArenas.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/iic2173/e0-DanteArenas/issues"
+  },
+  "homepage": "https://github.com/iic2173/e0-DanteArenas#readme",
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "koa": "^3.0.1",
+    "koa-router": "^14.0.0",
+    "mqtt": "^5.14.0",
+    "pg": "^8.16.3"
+  }
+}

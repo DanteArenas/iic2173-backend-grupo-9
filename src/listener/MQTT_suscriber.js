@@ -1,4 +1,4 @@
-require('dotenv').config()
+require('dotenv').config({ path: '../.env' });
 
 const mqtt = require('mqtt')
 
@@ -6,11 +6,11 @@ const { Client } = require('pg')
 
 // Configuración de PostgreSQL
 const dbClient = new Client({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
+    host: process.env.POSTGRES_HOST,
+    port: process.env.POSTGRES_PORT,
+    database: process.env.POSTGRES_NAME,
+    user: process.env.POSTGRES_USER,
+    password: process.env.POSTGRES_PASSWORD,
 });
 
 // Conectar a PostgreSQL
@@ -45,9 +45,6 @@ const options = {
 }
 
 console.log('Conectando al broker MQTT en %s\n', url);
-
-console.log('Options:');
-console.log(options);
 
 const client = mqtt.connect(url, options)
 
