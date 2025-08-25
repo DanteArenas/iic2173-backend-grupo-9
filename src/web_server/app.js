@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '../.env' });
+require('dotenv').config({ path: '../../.env' });
 
 const Koa = require('koa');
 const { koaBody } = require('koa-body');
@@ -12,7 +12,7 @@ app.use(koaBody());
 app.pool = new Pool({
     host: process.env.POSTGRES_HOST,
     port: Number(process.env.POSTGRES_PORT),
-    database: process.env.POSTGRES_NAME,
+    database: process.env.POSTGRES_DB,
     user: process.env.POSTGRES_USER,
     password: String(process.env.POSTGRES_PASSWORD),
 });
@@ -93,4 +93,7 @@ router.get('/properties/:id', async ctx => {
 
 app.use(router.routes()).use(router.allowedMethods());
 
-app.listen(3000);
+const PORT = process.env.APP_PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Servidor web corriendo en puerto ${PORT}`);
+});

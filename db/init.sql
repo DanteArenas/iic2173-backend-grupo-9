@@ -1,3 +1,5 @@
+\c properties_db;
+
 -- Habilitar la extensión unaccent
 CREATE EXTENSION IF NOT EXISTS unaccent;
 
@@ -8,5 +10,6 @@ CREATE EXTENSION IF NOT EXISTS unaccent;
 CREATE TABLE IF NOT EXISTS properties (
     id SERIAL PRIMARY KEY,
     data JSONB NOT NULL,
-    visits INT DEFAULT 1
+    visits INT DEFAULT 1,
+    updated_at TEXT
 );

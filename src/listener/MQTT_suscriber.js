@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '../.env' });
+require('dotenv').config({ path: '../../.env' });
 
 const mqtt = require('mqtt')
 
@@ -8,10 +8,20 @@ const { Client } = require('pg')
 const dbClient = new Client({
     host: process.env.POSTGRES_HOST,
     port: process.env.POSTGRES_PORT,
-    database: process.env.POSTGRES_NAME,
+    database: process.env.POSTGRES_DB,
     user: process.env.POSTGRES_USER,
     password: process.env.POSTGRES_PASSWORD,
 });
+
+// console.log({
+//     POSTGRES_HOST: process.env.POSTGRES_HOST,
+//     POSTGRES_PORT: process.env.POSTGRES_PORT,
+//     POSTGRES_NAME: process.env.POSTGRES_NAME,
+//     POSTGRES_USER: process.env.POSTGRES_USER,
+//     HOST: process.env.HOST,
+//     PORT: process.env.PORT,
+//     USER_mqtt: process.env.USER_mqtt
+// });
 
 // Conectar a PostgreSQL
 dbClient.connect()
@@ -81,7 +91,7 @@ client.on('message', async (topic, message) => {
                     "INSERT INTO properties (data, updated_at) VALUES ($1, $2)",
                     [JSON.stringify(property), property.timestamp]
                 );
-                console.log("✅ Propiedad nueva guardada:", property.url);
+                console.log("✅ Propiedad nueva guardada:", property.name);
             }
 
             console.log('✅ Propiedad guardada en PostgreSQL');
