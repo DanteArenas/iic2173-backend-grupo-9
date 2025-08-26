@@ -2,35 +2,7 @@ require('dotenv').config({ path: '../../.env' });
 
 const mqtt = require('mqtt')
 
-const { Client } = require('pg')
-
-// Configuración de PostgreSQL
-const dbClient = new Client({
-    host: process.env.POSTGRES_HOST,
-    port: process.env.POSTGRES_PORT,
-    database: process.env.POSTGRES_DB,
-    user: process.env.POSTGRES_USER,
-    password: process.env.POSTGRES_PASSWORD,
-});
-
-// console.log({
-//     POSTGRES_HOST: process.env.POSTGRES_HOST,
-//     POSTGRES_PORT: process.env.POSTGRES_PORT,
-//     POSTGRES_NAME: process.env.POSTGRES_NAME,
-//     POSTGRES_USER: process.env.POSTGRES_USER,
-//     HOST: process.env.HOST,
-//     PORT: process.env.PORT,
-//     USER_mqtt: process.env.USER_mqtt
-// });
-
-// Conectar a PostgreSQL
-dbClient.connect()
-    .then(() => {
-        console.log('✅ Conectado a PostgreSQL');
-    })
-    .catch(err => {
-        console.error('❌ Error conectando a PostgreSQL:', err);
-    });
+const axios = require('axios');
 
 const url = `mqtt://${process.env.HOST}:${process.env.PORT}`;
 
@@ -64,37 +36,17 @@ client.on('error', (err) => {
     client.end();
 });
 
+// POST de la propiedad en la api
 client.on('message', async (topic, message) => {
     if (topic === 'properties/info') {
         try {
             const property = JSON.parse(message.toString());
             console.log('Propiedad recibida:', property);
 
-            // Guardar en PostgreSQL
+            // Mandar a la API
+            await axios.post(`${process.env.API_URL}/properties`, property);
 
-            const result = await dbClient.query(
-                "SELECT id FROM properties WHERE data->>'url' = $1",
-                [property.url]
-            );
-
-            if (result.rows.length > 0) {
-                await dbClient.query(
-                    `UPDATE properties 
-                    SET visits = visits + 1, 
-                        updated_at = $2
-                    WHERE id = $1`,
-                    [result.rows[0].id, property.timestamp]
-                );
-                console.log("♻️ Propiedad repetida, visitas incrementadas y fecha actualizada:", property.name);
-            } else {
-                await dbClient.query(
-                    "INSERT INTO properties (data, updated_at) VALUES ($1, $2)",
-                    [JSON.stringify(property), property.timestamp]
-                );
-                console.log("✅ Propiedad nueva guardada:", property.name);
-            }
-
-            console.log('✅ Propiedad guardada en PostgreSQL');
+            console.log("📩 Propiedad enviada a la API");
         } catch (err) {
             console.error('❌ Error procesando mensaje:', err);
         }
