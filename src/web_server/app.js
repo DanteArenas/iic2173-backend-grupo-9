@@ -64,7 +64,7 @@ router.post('/properties', async ctx => {
 // get /properties
 router.get('/properties', async ctx => {
     try {
-        const { page = 1, limit = 25, price, location, date } = ctx.query;
+        const { page = 1, limit = 25, price, location, date, currency } = ctx.query;
         const offset = (page - 1) * limit;
 
         // Construir dinámicamente la cláusula WHERE y los parámetros
@@ -74,7 +74,16 @@ router.get('/properties', async ctx => {
         if (price) {
             queryParams.push(parseFloat(price));
             whereClauses.push(`(data->>'price')::numeric < $${queryParams.length}`);
+            // Si no se recibe currency el default es CLP
+            if (currency && currency == 'uf') {
+                queryParams.push('UF');
+            } else {
+                queryParams.push("$");
+            }
+            whereClauses.push(`(data->>'currency') = $${queryParams.length}`);
         }
+
+
 
         if (location) {
             queryParams.push(`%${location.toLowerCase()}%`);
