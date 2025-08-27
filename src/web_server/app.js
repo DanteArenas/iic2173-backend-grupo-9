@@ -75,7 +75,7 @@ router.get('/properties', async ctx => {
             queryParams.push(parseFloat(price));
             whereClauses.push(`(data->>'price')::numeric < $${queryParams.length}`);
             // Si no se recibe currency el default es CLP
-            if (currency && currency == 'uf') {
+            if (currency && currency.toLowerCase() == 'uf') {
                 queryParams.push('UF');
             } else {
                 queryParams.push("$");
