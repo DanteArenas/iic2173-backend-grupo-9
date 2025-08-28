@@ -42,14 +42,31 @@ services:
   # Web Server Service
   web_server:
     build: ./src/web_server
-    container_name: web-server
     restart: unless-stopped
     environment:
       - NODE_ENV=development
     env_file:
       - .env
     ports:
-      - "${APP_PORT}:3000"
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app-network
+    volumes:
+      - ./src/web_server:/app
+      - /app/node_modules
+
+  web_server_2:
+    build: ./src/web_server
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=development
+    env_file:
+      - .env
+    ports:
+      - "3001:3000"
     depends_on:
       postgres:
         condition: service_healthy
