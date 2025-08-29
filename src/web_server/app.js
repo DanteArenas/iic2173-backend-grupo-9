@@ -140,6 +140,7 @@ router.get('/properties/:id', async ctx => {
 
 app.use(router.routes()).use(router.allowedMethods());
 
-app.listen(() => {
-    console.log(`🚀 Servidor web corriendo`);
+const PORT = process.env.APP_PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Servidor web corriendo en puerto ${PORT}`);
 });
