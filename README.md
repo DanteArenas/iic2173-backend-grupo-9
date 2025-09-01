@@ -18,7 +18,7 @@ IP elástica asociada:
 
 Ejecutar:
 `ssh -i "e0arquisis.pem" ubuntu@ec2-54-174-177-30.compute-1.amazonaws.com`
-En la carpeta en la que se encuentre el archivo .pem
+en la carpeta en la que se encuentre el archivo .pem
 
 ## Puntajes logrados:
 
