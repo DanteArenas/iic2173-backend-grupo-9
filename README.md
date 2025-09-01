@@ -8,7 +8,7 @@ Se implementaron todos los requisitos, funcionales y variables. Para el servicio
 
 ## Nombre del dominio:
 
-# e0arquisisdantearenas.me
+e0arquisisdantearenas.me
 
 Link de la API:
 https://www.e0arquisisdantearenas.me/properties
