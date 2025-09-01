@@ -6,9 +6,7 @@
 
 Se implementaron todos los requisitos, funcionales y variables. Para el servicio web se utilizó Javascript con Koa, y Postgres para la base de datos con las propiedades. Para la conexión al broker se utilizó Javascript. 
 
-## Nombre del dominio:
-
-e0arquisisdantearenas.me
+## Nombre del dominio: e0arquisisdantearenas.me
 
 Link de la API:
 https://www.e0arquisisdantearenas.me/properties
