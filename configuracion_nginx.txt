@@ -1,0 +1,44 @@
+upstream backend_servers {
+    server 127.0.0.1:3000;
+    server 127.0.0.1:3001;
+}
+
+server {
+
+    server_name e0arquisisdantearenas.me www.e0arquisisdantearenas.me;
+
+    location / {
+        proxy_pass http://backend_servers;
+        include proxy_params;
+    }
+
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/e0arquisisdantearenas.me/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/e0arquisisdantearenas.me/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+
+}
+server {
+    if ($host = www.e0arquisisdantearenas.me) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    if ($host = e0arquisisdantearenas.me) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80;
+    listen [::]:80;
+
+    server_name e0arquisisdantearenas.me www.e0arquisisdantearenas.me;
+    return 404; # managed by Certbot
+
+
+
+
+}
