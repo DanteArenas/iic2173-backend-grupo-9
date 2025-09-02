@@ -8,6 +8,8 @@ Se implementaron todos los requisitos, funcionales y variables. Para el servicio
 
 La configuración de nginx, ubicada en la instancia ec2 en `/etc/nginx/sites-available/e0arquisisdantearenas.me`, se encuentra subida en el directorio raíz del repositorio.
 
+La instancia está en us-east-1
+
 ## Nombre del dominio: e0arquisisdantearenas.me
 
 Link de la API:
