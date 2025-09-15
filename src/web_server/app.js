@@ -1,4 +1,13 @@
-require('dotenv').config({ path: '../../.env' });
+const path = require('path');
+const fs = require('fs');
+const dotenv = require('dotenv');
+
+const envPath = path.resolve(__dirname, '../../.env');
+if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+} else {
+    dotenv.config();
+}
 
 const Koa = require('koa');
 const { koaBody } = require('koa-body');
@@ -9,13 +18,83 @@ const app = new Koa();
 
 app.use(koaBody());
 
-app.pool = new Pool({
-    host: process.env.POSTGRES_HOST,
-    port: Number(process.env.POSTGRES_PORT),
-    database: process.env.POSTGRES_DB,
-    user: process.env.POSTGRES_USER,
-    password: String(process.env.POSTGRES_PASSWORD),
-});
+const dbConfig = {
+    host: process.env.POSTGRES_HOST || 'postgres',
+    port: Number(process.env.POSTGRES_PORT || 5432),
+    database: process.env.POSTGRES_DB || 'properties_db',
+    user: process.env.POSTGRES_USER || 'properties_user',
+    password: process.env.POSTGRES_PASSWORD || '',
+};
+
+const validatePropertyPayload = payload => {
+    const errors = [];
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return { isValid: false, errors: ['Request body must be a JSON object'] };
+    }
+
+    const sanitized = { ...payload };
+
+    if (typeof payload.url !== 'string' || payload.url.trim() === '') {
+        errors.push('`url` must be a non-empty string');
+    } else {
+        try {
+            const normalizedUrl = new URL(payload.url.trim());
+            sanitized.url = normalizedUrl.toString();
+        } catch (err) {
+            errors.push('`url` must be a valid URL');
+        }
+    }
+
+    if (typeof payload.timestamp !== 'string' || payload.timestamp.trim() === '') {
+        errors.push('`timestamp` must be provided as a string');
+    } else {
+        const parsedTimestamp = Date.parse(payload.timestamp);
+        if (Number.isNaN(parsedTimestamp)) {
+            errors.push('`timestamp` must be a valid date/time');
+        } else {
+            sanitized.timestamp = new Date(parsedTimestamp).toISOString();
+        }
+    }
+
+    if (payload.location !== undefined) {
+        if (typeof payload.location !== 'string' || payload.location.trim() === '') {
+            errors.push('`location` must be a non-empty string when provided');
+        } else {
+            sanitized.location = payload.location.trim();
+        }
+    }
+
+    if (payload.price !== undefined) {
+        let priceValue = payload.price;
+        if (typeof priceValue === 'string') {
+            priceValue = priceValue.trim();
+        }
+
+        if (priceValue === '') {
+            errors.push('`price` must not be empty when provided');
+        } else {
+            const parsedPrice = Number(priceValue);
+            if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+                errors.push('`price` must be a non-negative number when provided');
+            } else {
+                sanitized.price = parsedPrice;
+            }
+        }
+    }
+
+    if (payload.currency !== undefined) {
+        if (typeof payload.currency !== 'string' || payload.currency.trim() === '') {
+            errors.push('`currency` must be a non-empty string when provided');
+        } else {
+            sanitized.currency = payload.currency.trim().toUpperCase();
+        }
+    }
+
+    return { isValid: errors.length === 0, errors, value: sanitized };
+};
+
+app.pool = new Pool(dbConfig);
 
 
 const router = new Router();
@@ -23,7 +102,13 @@ const router = new Router();
 // post /properties
 router.post('/properties', async ctx => {
     try {
-        const property = ctx.request.body;
+        const { isValid, errors, value: property } = validatePropertyPayload(ctx.request.body);
+
+        if (!isValid) {
+            ctx.status = 400;
+            ctx.body = { error: 'Invalid property payload', details: errors };
+            return;
+        }
 
         console.log('Propiedad recibida:', property);
 
