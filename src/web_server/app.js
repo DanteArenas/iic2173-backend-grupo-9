@@ -99,7 +99,7 @@ router.get('/properties', async ctx => {
 
         // Consultar propiedades filtradas con paginación
         const result = await ctx.app.pool.query(
-            `SELECT * FROM properties ${whereSQL} ORDER BY (data->>'timestamp')::timestamp DESC LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`,
+            `SELECT * FROM properties ${whereSQL} ORDER BY (data->>'timestamp')::timestamp ASC LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`,
             [...queryParams, parseInt(limit), parseInt(offset)]
         );
 
