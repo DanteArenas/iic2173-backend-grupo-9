@@ -11,20 +11,21 @@ if (fs.existsSync(envPath)) {
 
 const Koa = require('koa');
 const { koaBody } = require('koa-body');
-const { Pool } = require('pg');
+
+const sequelize = require('./database');
+const Property = require('./models/Property');
+
+const { Op, fn, col } = require('sequelize');
+
+sequelize.authenticate()
+    .then(() => console.log('Conexión exitosa a la base de datos con Sequelize'))
+    .catch(err => console.error('Error de conexión con Sequelize:', err));
+
 const Router = require('@koa/router');
 
 const app = new Koa();
 
 app.use(koaBody());
-
-const dbConfig = {
-    host: process.env.POSTGRES_HOST || 'postgres',
-    port: Number(process.env.POSTGRES_PORT || 5432),
-    database: process.env.POSTGRES_DB || 'properties_db',
-    user: process.env.POSTGRES_USER || 'properties_user',
-    password: process.env.POSTGRES_PASSWORD || '',
-};
 
 const validatePropertyPayload = payload => {
     const errors = [];
@@ -94,8 +95,6 @@ const validatePropertyPayload = payload => {
     return { isValid: errors.length === 0, errors, value: sanitized };
 };
 
-app.pool = new Pool(dbConfig);
-
 
 const router = new Router();
 
@@ -113,27 +112,30 @@ router.post('/properties', async ctx => {
         console.log('Propiedad recibida:', property);
 
         // Buscar si ya existe por URL
-        const result = await ctx.app.pool.query(
-            "SELECT id FROM properties WHERE data->>'url' = $1",
-            [property.url]
-        );
+        const result = await Property.findOne({
+            where: sequelize.where(
+                sequelize.json('data.url'),
+                property.url
+            ),
+            attributes: ['id']
+        });
 
-        if (result.rows.length > 0) {
-            await ctx.app.pool.query(
-                `UPDATE properties 
-                 SET visits = visits + 1, 
-                     updated_at = $2
-                 WHERE id = $1`,
-                [result.rows[0].id, property.timestamp]
+        if (result) {
+            await Property.update(
+                {
+                    visits: sequelize.literal('COALESCE(visits, 0) + 1'),
+                    updated_at: property.timestamp
+                },
+                { where: { id: result.id } }
             );
-            console.log("♻️ Propiedad repetida, visitas incrementadas", { id: result.rows[0].id });
+            console.log("♻️ Propiedad repetida, visitas incrementadas", { id: result.id });
             ctx.status = 200;
         } else {
-            const insert = await ctx.app.pool.query(
-                "INSERT INTO properties (data, updated_at) VALUES ($1, $2) RETURNING id",
-                [JSON.stringify(property), property.timestamp]
-            );
-            console.log("✅ Propiedad nueva guardada", { id: insert.rows[0].id });
+            const nuevaPropiedad = await Property.create({
+                data: property,
+                updated_at: property.timestamp
+            });
+            console.log("✅ Propiedad nueva guardada", { id: nuevaPropiedad.id });
             ctx.status = 201;
         }
     } catch (err) {
@@ -152,44 +154,48 @@ router.get('/properties', async ctx => {
         const { page = 1, limit = 25, price, location, date, currency } = ctx.query;
         const offset = (page - 1) * limit;
 
-        // Construir dinámicamente la cláusula WHERE y los parámetros
-        let whereClauses = [];
-        let queryParams = [];
-
+        // Construir el array de condiciones where para Sequelize
+        const where = [];
+        // Filtros sobre el campo data (JSONB)
         if (price) {
-            queryParams.push(parseFloat(price));
-            whereClauses.push(`(data->>'price')::numeric < $${queryParams.length}`);
+            where.push(
+                sequelize.where(
+                    sequelize.cast(sequelize.json('data.price'), 'numeric'),
+                    { [Op.lt]: parseFloat(price) }
+                )
+            );
             // Si no se recibe currency el default es CLP
-            if (currency && currency.toLowerCase() == 'uf') {
-                queryParams.push('UF');
-            } else {
-                queryParams.push("$");
-            }
-            whereClauses.push(`(data->>'currency') = $${queryParams.length}`);
+            where.push(
+                sequelize.where(
+                    sequelize.json('data.currency'),
+                    (currency && currency.toLowerCase() === 'uf') ? 'UF' : '$'
+                )
+            );
         }
-
-
-
         if (location) {
-            queryParams.push(`%${location.toLowerCase()}%`);
-            whereClauses.push(`unaccent(lower(data->>'location')) LIKE unaccent($${queryParams.length})`);
+            where.push(
+                sequelize.where(
+                    sequelize.fn('unaccent', sequelize.fn('lower', sequelize.json('data.location'))),
+                    { [Op.like]: `%${location.toLowerCase()}%` }
+                )
+            );
         }
-
         if (date) {
-            queryParams.push(date);
-            whereClauses.push(`DATE((data->>'timestamp')::timestamp) = $${queryParams.length}`);
+            where.push(
+                sequelize.where(
+                    sequelize.fn('DATE', sequelize.cast(sequelize.json('data.timestamp'), 'timestamp')),
+                    date
+                )
+            );
         }
 
-        const whereSQL = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
-
-        // Consultar propiedades filtradas con paginación
-        const result = await ctx.app.pool.query(
-            `SELECT * FROM properties ${whereSQL} ORDER BY (data->>'timestamp')::timestamp ASC LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`,
-            [...queryParams, parseInt(limit), parseInt(offset)]
-        );
-
-        ctx.body = result.rows;
-
+        const properties = await Property.findAll({
+            where: where.length > 0 ? { [Op.and]: where } : undefined,
+            order: [[sequelize.literal("(data->>'timestamp')::timestamp"), 'ASC']],
+            limit: parseInt(limit),
+            offset: parseInt(offset)
+        });
+        ctx.body = properties;
     } catch (err) {
         console.error('Error fetching properties:', err);
         ctx.status = 500;
@@ -201,20 +207,14 @@ router.get('/properties', async ctx => {
 // /properties/{:id}
 router.get('/properties/:id', async ctx => {
     const { id } = ctx.params;
-
     try {
-        const result = await ctx.app.pool.query(
-            'SELECT * FROM properties WHERE id = $1',
-            [id]
-        );
-
-        if (result.rows.length === 0) {
+        const property = await Property.findByPk(id);
+        if (!property) {
             ctx.status = 404;
             ctx.body = { error: 'Property not found' };
             return;
         }
-
-        ctx.body = result.rows[0];
+        ctx.body = property;
     } catch (err) {
         console.error('Error fetching property:', err);
         ctx.status = 500;
