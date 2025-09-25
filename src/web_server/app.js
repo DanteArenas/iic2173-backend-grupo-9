@@ -12,8 +12,11 @@ if (fs.existsSync(envPath)) {
 const Koa = require('koa');
 const { koaBody } = require('koa-body');
 
+const bcrypt = require('bcryptjs');
+
 const sequelize = require('./database');
 const Property = require('./models/Property');
+const User = require('./models/User');
 
 const { Op, fn, col } = require('sequelize');
 
@@ -96,7 +99,104 @@ const validatePropertyPayload = payload => {
 };
 
 
+const validateUserPayload = payload => {
+    const errors = [];
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return { isValid: false, errors: ['Request body must be a JSON object'] };
+    }
+
+    const sanitized = {};
+
+    if (typeof payload.full_name !== 'string' || payload.full_name.trim() === '') {
+        errors.push('`full_name` must be a non-empty string');
+    } else {
+        sanitized.full_name = payload.full_name.trim();
+    }
+
+    if (typeof payload.email !== 'string' || payload.email.trim() === '') {
+        errors.push('`email` must be a non-empty string');
+    } else {
+        const trimmedEmail = payload.email.trim();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(trimmedEmail)) {
+            errors.push('`email` must be a valid email address');
+        } else {
+            sanitized.email = trimmedEmail.toLowerCase();
+        }
+    }
+
+    if (payload.phone !== undefined) {
+        if (typeof payload.phone !== 'string' || payload.phone.trim() === '') {
+            errors.push('`phone` must be a non-empty string when provided');
+        } else {
+            sanitized.phone = payload.phone.trim();
+        }
+    }
+
+    if (typeof payload.password !== 'string' || payload.password.length < 8) {
+        errors.push('`password` must be at least 8 characters long');
+    } else {
+        sanitized.password = payload.password;
+    }
+
+    return { isValid: errors.length === 0, errors, value: sanitized };
+};
+
+
 const router = new Router();
+
+// post /users - user registration
+router.post('/users', async ctx => {
+    const { isValid, errors, value: user } = validateUserPayload(ctx.request.body);
+
+    if (!isValid) {
+        ctx.status = 400;
+        ctx.body = { error: 'Invalid user payload', details: errors };
+        return;
+    }
+
+    try {
+        const existingUser = await User.findOne({
+            where: sequelize.where(fn('LOWER', col('email')), user.email)
+        });
+
+        if (existingUser) {
+            ctx.status = 409;
+            ctx.body = { error: 'Email already registered' };
+            return;
+        }
+
+        const passwordHash = await bcrypt.hash(user.password, 10);
+
+        const newUser = await User.create({
+            full_name: user.full_name,
+            email: user.email,
+            phone: user.phone || null,
+            password_hash: passwordHash
+        });
+
+        ctx.status = 201;
+        ctx.body = {
+            id: newUser.id,
+            full_name: newUser.full_name,
+            email: newUser.email,
+            phone: newUser.phone,
+            created_at: newUser.created_at
+        };
+    } catch (err) {
+        console.error('Error registering user:', err);
+
+        if (err.name === 'SequelizeUniqueConstraintError') {
+            ctx.status = 409;
+            ctx.body = { error: 'Email already registered' };
+            return;
+        }
+
+        ctx.status = 500;
+        ctx.body = { error: 'Internal server error' };
+    }
+});
 
 // post /properties
 router.post('/properties', async ctx => {
