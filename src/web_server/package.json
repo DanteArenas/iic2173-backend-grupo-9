@@ -12,12 +12,14 @@
   "description": "",
   "dependencies": {
     "@koa/router": "^14.0.0",
-    "bcryptjs": "^2.4.3",
+    "@koa/cors": "^5.0.0",
     "dotenv": "^17.2.1",
     "koa": "^3.0.1",
     "koa-body": "^6.0.1",
+    "koa-jwt": "^4.0.4",
     "nodemon": "^3.1.10",
     "pg": "^8.16.3",
-    "sequelize": "^6.37.7"
+    "sequelize": "^6.37.7",
+    "jwks-rsa": "^3.1.0"
   }
 }

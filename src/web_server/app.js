@@ -11,14 +11,15 @@ if (fs.existsSync(envPath)) {
 
 const Koa = require('koa');
 const { koaBody } = require('koa-body');
-
-const bcrypt = require('bcryptjs');
+const jwt = require('koa-jwt');
+const jwksRsa = require('jwks-rsa');
+const cors = require('@koa/cors');
 
 const sequelize = require('./database');
 const Property = require('./models/Property');
 const User = require('./models/User');
 
-const { Op, fn, col } = require('sequelize');
+const { Op } = require('sequelize');
 
 sequelize.authenticate()
     .then(() => console.log('Conexión exitosa a la base de datos con Sequelize'))
@@ -28,7 +29,72 @@ const Router = require('@koa/router');
 
 const app = new Koa();
 
+const buildCorsOptions = () => {
+    const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+        .split(',')
+        .map(origin => origin.trim())
+        .filter(Boolean);
+
+    if (allowedOrigins.length === 0) {
+        return { origin: '*' };
+    }
+
+    return {
+        origin: ctx => {
+            const requestOrigin = ctx.request.header.origin;
+            if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+                return requestOrigin;
+            }
+            return undefined;
+        }
+    };
+};
+
+app.use(cors(buildCorsOptions()));
+
 app.use(koaBody());
+
+const createAuthMiddleware = () => {
+    const issuerBaseUrl = process.env.AUTH0_ISSUER_BASE_URL;
+    const audience = process.env.AUTH0_AUDIENCE;
+
+    if (!issuerBaseUrl || !audience) {
+        console.warn('⚠️  Missing Auth0 configuration. Set AUTH0_ISSUER_BASE_URL and AUTH0_AUDIENCE to protect routes.');
+        return async (ctx, next) => {
+            ctx.status = 500;
+            ctx.body = { error: 'Server misconfigured: Auth0 environment variables missing' };
+        };
+    }
+
+    const issuer = issuerBaseUrl.endsWith('/') ? issuerBaseUrl : `${issuerBaseUrl}/`;
+
+    return jwt({
+        secret: jwksRsa.koaJwtSecret({
+            cache: true,
+            rateLimit: true,
+            jwksRequestsPerMinute: 5,
+            jwksUri: `${issuer}.well-known/jwks.json`,
+        }),
+        audience,
+        issuer,
+        algorithms: ['RS256'],
+    });
+};
+
+const requireAuth = createAuthMiddleware();
+
+app.use(async (ctx, next) => {
+    try {
+        await next();
+    } catch (err) {
+        if (err.status === 401) {
+            ctx.status = 401;
+            ctx.body = { error: 'Unauthorized', message: err.message };
+        } else {
+            throw err;
+        }
+    }
+});
 
 const validatePropertyPayload = payload => {
     const errors = [];
@@ -99,107 +165,57 @@ const validatePropertyPayload = payload => {
 };
 
 
-const validateUserPayload = payload => {
-    const errors = [];
-
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-        return { isValid: false, errors: ['Request body must be a JSON object'] };
-    }
-
-    const sanitized = {};
-
-    if (typeof payload.full_name !== 'string' || payload.full_name.trim() === '') {
-        errors.push('`full_name` must be a non-empty string');
-    } else {
-        sanitized.full_name = payload.full_name.trim();
-    }
-
-    if (typeof payload.email !== 'string' || payload.email.trim() === '') {
-        errors.push('`email` must be a non-empty string');
-    } else {
-        const trimmedEmail = payload.email.trim();
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(trimmedEmail)) {
-            errors.push('`email` must be a valid email address');
-        } else {
-            sanitized.email = trimmedEmail.toLowerCase();
-        }
-    }
-
-    if (payload.phone !== undefined) {
-        if (typeof payload.phone !== 'string' || payload.phone.trim() === '') {
-            errors.push('`phone` must be a non-empty string when provided');
-        } else {
-            sanitized.phone = payload.phone.trim();
-        }
-    }
-
-    if (typeof payload.password !== 'string' || payload.password.length < 8) {
-        errors.push('`password` must be at least 8 characters long');
-    } else {
-        sanitized.password = payload.password;
-    }
-
-    return { isValid: errors.length === 0, errors, value: sanitized };
-};
-
-
 const router = new Router();
 
-// post /users - user registration
-router.post('/users', async ctx => {
-    const { isValid, errors, value: user } = validateUserPayload(ctx.request.body);
+router.get('/me', requireAuth, async ctx => {
+    const tokenPayload = ctx.state.user || {};
+    const auth0UserId = tokenPayload.sub;
 
-    if (!isValid) {
+    if (!auth0UserId) {
         ctx.status = 400;
-        ctx.body = { error: 'Invalid user payload', details: errors };
+        ctx.body = { error: 'Invalid token payload', message: 'sub claim is required' };
         return;
     }
 
-    try {
-        const existingUser = await User.findOne({
-            where: sequelize.where(fn('LOWER', col('email')), user.email)
-        });
+    const emailClaim = typeof tokenPayload.email === 'string' ? tokenPayload.email.toLowerCase() : null;
+    const nameClaim = typeof tokenPayload.name === 'string' && tokenPayload.name.trim() !== ''
+        ? tokenPayload.name.trim()
+        : null;
 
-        if (existingUser) {
-            ctx.status = 409;
-            ctx.body = { error: 'Email already registered' };
-            return;
-        }
+    const defaultName = nameClaim || emailClaim || 'Auth0 User';
+    const defaultEmail = emailClaim || `${auth0UserId.replace(/[^a-zA-Z0-9]/g, '_')}@auth0.local`;
 
-        const passwordHash = await bcrypt.hash(user.password, 10);
+    const [user] = await User.findOrCreate({
+        where: { auth0_user_id: auth0UserId },
+        defaults: {
+            full_name: defaultName,
+            email: defaultEmail,
+        },
+    });
 
-        const newUser = await User.create({
-            full_name: user.full_name,
-            email: user.email,
-            phone: user.phone || null,
-            password_hash: passwordHash
-        });
-
-        ctx.status = 201;
-        ctx.body = {
-            id: newUser.id,
-            full_name: newUser.full_name,
-            email: newUser.email,
-            phone: newUser.phone,
-            created_at: newUser.created_at
-        };
-    } catch (err) {
-        console.error('Error registering user:', err);
-
-        if (err.name === 'SequelizeUniqueConstraintError') {
-            ctx.status = 409;
-            ctx.body = { error: 'Email already registered' };
-            return;
-        }
-
-        ctx.status = 500;
-        ctx.body = { error: 'Internal server error' };
+    const updates = {};
+    if (nameClaim && user.full_name !== nameClaim) {
+        updates.full_name = nameClaim;
     }
+    if (emailClaim && user.email !== emailClaim) {
+        updates.email = emailClaim;
+    }
+
+    if (Object.keys(updates).length > 0) {
+        await user.update(updates);
+    }
+
+    ctx.body = {
+        id: user.id,
+        full_name: user.full_name,
+        email: user.email,
+        phone: user.phone,
+        auth0_user_id: user.auth0_user_id,
+    };
 });
 
 // post /properties
-router.post('/properties', async ctx => {
+router.post('/properties', requireAuth, async ctx => {
     try {
         const { isValid, errors, value: property } = validatePropertyPayload(ctx.request.body);
 
@@ -249,7 +265,7 @@ router.post('/properties', async ctx => {
 
 // RF1, 3 y 4
 // get /properties
-router.get('/properties', async ctx => {
+router.get('/properties', requireAuth, async ctx => {
     try {
         const { page = 1, limit = 25, price, location, date, currency } = ctx.query;
         const offset = (page - 1) * limit;
@@ -305,7 +321,7 @@ router.get('/properties', async ctx => {
 
 // RF2
 // /properties/{:id}
-router.get('/properties/:id', async ctx => {
+router.get('/properties/:id', requireAuth, async ctx => {
     const { id } = ctx.params;
     try {
         const property = await Property.findByPk(id);
