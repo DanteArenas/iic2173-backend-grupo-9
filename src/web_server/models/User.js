@@ -19,9 +19,10 @@ const User = sequelize.define('User', {
         type: DataTypes.TEXT,
         allowNull: true,
     },
-    password_hash: {
+    auth0_user_id: {
         type: DataTypes.TEXT,
         allowNull: false,
+        unique: true,
     },
 }, {
     tableName: 'users',

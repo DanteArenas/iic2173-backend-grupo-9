@@ -14,16 +14,16 @@ CREATE TABLE IF NOT EXISTS properties (
     updated_at TEXT
 );
 
--- Tabla de usuarios para el registro en la plataforma (RF01)
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     full_name TEXT NOT NULL,
     email TEXT NOT NULL,
     phone TEXT,
-    password_hash TEXT NOT NULL,
+    auth0_user_id TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Enforce unique emails (case-insensitive)
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_idx ON users ((LOWER(email)));
+CREATE UNIQUE INDEX IF NOT EXISTS users_auth0_id_unique_idx ON users (auth0_user_id);
