@@ -18,6 +18,26 @@ https://www.e0arquisisdantearenas.me/properties
 IP elástica asociada:
 54.174.177.30
 
+## Autenticación con Auth0
+
+El servicio principal ya no gestiona usuarios ni contraseñas. Toda la autenticación se realiza mediante tokens JWT emitidos por Auth0 y validados en el backend.
+
+1. Crear una API en Auth0 e identificar su `audience`.
+2. Configurar una aplicación Machine-to-Machine para el listener MQTT y autorizarla contra la API anterior.
+3. Agregar a `.env` las siguientes variables (consumidas por los contenedores mediante `env_file`):
+   * `AUTH0_ISSUER_BASE_URL=https://TENANT.auth0.com`
+   * `AUTH0_AUDIENCE=https://api.identifier`
+   * `AUTH0_CLIENT_ID=...` y `AUTH0_CLIENT_SECRET=...` (credenciales M2M del listener)
+   * `CORS_ALLOWED_ORIGINS=http://localhost:5173` (se pueden separar múltiples orígenes con comas)
+4. (Opcional) Si Auth0 se encuentra detrás de un Custom Domain, exponga `AUTH0_TOKEN_URL` con la URL completa hacia `/oauth/token`.
+5. Ejecutar `npm install` dentro de `src/web_server` para instalar `koa-jwt` y `jwks-rsa`.
+
+Endpoints relevantes:
+
+- `GET /me` devuelve o sincroniza el perfil interno del usuario autenticado (clave externa `auth0_user_id`).
+- Todos los endpoints `/properties` requieren el encabezado `Authorization: Bearer <token>`.
+- Para acelerar la migración del único usuario de prueba existente, el script `db/init.sql` asigna automáticamente un identificador `auth0|mock-{id}` si el campo `auth0_user_id` está vacío; reemplázalo luego con el `sub` real entregado por Auth0.
+
 ## Método de acceso al servidor:
 
 Ejecutar:
