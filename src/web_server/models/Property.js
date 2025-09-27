@@ -15,6 +15,10 @@ const Property = sequelize.define('Property', {
         type: DataTypes.INTEGER,
         defaultValue: 1
     },
+    reservation_cost: {
+        type: DataTypes.INTEGER,
+        allowNull: true
+    },
     updated_at: {
         type: DataTypes.TEXT
     }
