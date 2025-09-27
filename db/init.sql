@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS properties (
     id SERIAL PRIMARY KEY,
     data JSONB NOT NULL,
     visits INT DEFAULT 1,
+    reservation_cost INT,
     updated_at TEXT
 );
 
