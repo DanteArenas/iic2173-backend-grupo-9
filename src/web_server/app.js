@@ -18,6 +18,7 @@ const cors = require('@koa/cors');
 const sequelize = require('./database');
 const Property = require('./models/Property');
 const User = require('./models/User');
+const { getUfValue } = require('./services/ufService');
 
 const { Op } = require('sequelize');
 
@@ -165,6 +166,30 @@ const validatePropertyPayload = payload => {
 };
 
 
+const RESERVATION_RATE = 0.1;
+const normalizeCurrency = currency => typeof currency === 'string'
+    ? currency.trim().toUpperCase()
+    : null;
+
+const computeReservationCost = async property => {
+    if (!property || !Number.isFinite(property.price)) {
+        return null;
+    }
+
+    const currency = normalizeCurrency(property.currency) || 'CLP';
+
+    if (currency === 'UF') {
+        const ufValue = await getUfValue(property.timestamp);
+        if (!Number.isFinite(ufValue)) {
+            throw new Error('UF value is not numeric');
+        }
+        return Math.round(property.price * ufValue * RESERVATION_RATE);
+    }
+
+    return Math.round(property.price * RESERVATION_RATE);
+};
+
+
 const router = new Router();
 
 router.get('/me', requireAuth, async ctx => {
@@ -227,6 +252,13 @@ router.post('/properties', requireAuth, async ctx => {
 
         console.log('Propiedad recibida:', property);
 
+        let reservationCost = null;
+        try {
+            reservationCost = await computeReservationCost(property);
+        } catch (calcError) {
+            console.warn('⚠️  Unable to compute reservation cost, continuing without it', calcError);
+        }
+
         // Buscar si ya existe por URL
         const result = await Property.findOne({
             where: sequelize.where(
@@ -237,11 +269,17 @@ router.post('/properties', requireAuth, async ctx => {
         });
 
         if (result) {
+            const updates = {
+                visits: sequelize.literal('COALESCE(visits, 0) + 1'),
+                updated_at: property.timestamp
+            };
+
+            if (reservationCost !== null) {
+                updates.reservation_cost = reservationCost;
+            }
+
             await Property.update(
-                {
-                    visits: sequelize.literal('COALESCE(visits, 0) + 1'),
-                    updated_at: property.timestamp
-                },
+                updates,
                 { where: { id: result.id } }
             );
             console.log("♻️ Propiedad repetida, visitas incrementadas", { id: result.id });
@@ -249,7 +287,8 @@ router.post('/properties', requireAuth, async ctx => {
         } else {
             const nuevaPropiedad = await Property.create({
                 data: property,
-                updated_at: property.timestamp
+                updated_at: property.timestamp,
+                reservation_cost: reservationCost
             });
             console.log("✅ Propiedad nueva guardada", { id: nuevaPropiedad.id });
             ctx.status = 201;
