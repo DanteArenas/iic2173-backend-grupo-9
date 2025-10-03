@@ -8,7 +8,7 @@ if (fs.existsSync(envPath)) {
 } else {
     dotenv.config();
 }
-const sendPurchaseRequest = require('../listener/sendPurchaseRequest');
+const sendPurchaseRequest = require('./listener/sendPurchaseRequest');
 
 const Koa = require('koa');
 const { koaBody } = require('koa-body');

@@ -1,6 +1,6 @@
 // src/listener/sendPurchaseRequest.js
 const { v4: uuidv4 } = require('uuid');
-const Request = require('../web_server/models/Request');
+const Request = require('../models/Request');
 const client = require('./mqttClient');
 
 async function sendPurchaseRequest(url, reservationCost) {

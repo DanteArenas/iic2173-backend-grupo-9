@@ -12,8 +12,9 @@ if (fs.existsSync(envPath)) {
 }
 
 const Request = require('../web_server/models/Request');
-const client = require('./mqttClient');
+const Property = require('../web_server/models/Property');
 const EventLog = require('../web_server/models/EventLog');
+const client = require('./mqttClient');
 
 
 
@@ -84,54 +85,64 @@ client.subscribe('properties/requests', (err) => {
 // =========================
 client.on('message', async (topic, message) => {
     if (topic === 'properties/info') {
+        let property;
         try {
-        const property = JSON.parse(message.toString());
-        console.log('📩 Propiedad recibida:', property);
+            property = JSON.parse(message.toString());
+            console.log('📩 Propiedad recibida:', property);
 
-        const machineToken = await fetchMachineToken();
-        await axios.post(`${process.env.API_URL}/properties`, property, {
-            headers: { Authorization: `Bearer ${machineToken}` },
-        });
+            const machineToken = await fetchMachineToken();
+            await axios.post(`${process.env.API_URL}/properties`, property, {
+                headers: { Authorization: `Bearer ${machineToken}` },
+            });
 
-        console.log("📤 Propiedad enviada a la API");
+            console.log('📤 Propiedad enviada a la API');
         } catch (err) {
-        console.error('❌ Error procesando propiedad:', err);
+            console.error('❌ Error procesando propiedad:', err);
         }
 
-        await EventLog.create({
-            type: 'PROPERTY_INFO',
-            payload: property,
-            related_request_id: null,
-      });
+        if (property) {
+            await EventLog.create({
+                type: 'PROPERTY_INFO',
+                payload: property,
+                related_request_id: null,
+            });
+        }
     }
 
     if (topic === 'properties/validation') {
+        let validation;
+        let requestId;
+        let status;
         try {
-        const validation = JSON.parse(message.toString());
-        console.log("📩 Validación recibida:", validation);
+            validation = JSON.parse(message.toString());
+            console.log('📩 Validación recibida:', validation);
 
-        const { request_id, status, reason } = validation;
+            requestId = validation.request_id;
+            status = validation.status;
+            const { reason } = validation;
 
-        const request = await Request.findOne({ where: { request_id } });
-        if (request) {
-            await request.update({
-            status: status.toUpperCase(),
-            reason: reason || null,
-            updated_at: new Date()
-            });
-            console.log(`🔄 Request ${request_id} actualizado con estado ${status}`);
-        } else {
-            console.warn(`⚠️ Request ${request_id} no encontrado en DB`);
-        }
+            const request = await Request.findOne({ where: { request_id: requestId } });
+            if (request) {
+                await request.update({
+                    status: status.toUpperCase(),
+                    reason: reason || null,
+                    updated_at: new Date(),
+                });
+                console.log(`🔄 Request ${requestId} actualizado con estado ${status}`);
+            } else {
+                console.warn(`⚠️ Request ${requestId} no encontrado en DB`);
+            }
         } catch (err) {
-        console.error('❌ Error procesando validación:', err);
+            console.error('❌ Error procesando validación:', err);
         }
 
-        await EventLog.create({
-            type: `VALIDATION_${status.toUpperCase()}`, 
-            payload: validation,
-            related_request_id: request_id,
-        });
+        if (validation && status) {
+            await EventLog.create({
+                type: `VALIDATION_${status.toUpperCase()}`,
+                payload: validation,
+                related_request_id: requestId ?? null,
+            });
+        }
     }
 
     if (topic === 'properties/requests') {

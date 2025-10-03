@@ -38,6 +38,7 @@ services:
     volumes:
       - ./src/listener:/app
       - /app/node_modules
+      - ./src/web_server:/web_server
 
   # Web Server Service
   web_server:
@@ -56,6 +57,7 @@ services:
       - app-network
     volumes:
       - ./src/web_server:/app
+      - ./src/listener:/app/listener
       - /app/node_modules
 
   web_server_2:
@@ -74,6 +76,7 @@ services:
       - app-network
     volumes:
       - ./src/web_server:/app
+      - ./src/listener:/app/listener
       - /app/node_modules
 
 volumes:
