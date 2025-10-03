@@ -370,7 +370,7 @@ router.get('/properties/:id', requireAuth, async ctx => {
 });
 
 // --- RF5: BUY ---
-router.post('/buy', requireAuth, async ctx => {
+router.post('/properties/buy', requireAuth, async ctx => {
     const { url, reservation_cost } = ctx.request.body;
 
     if (!url || !reservation_cost) {
@@ -380,12 +380,23 @@ router.post('/buy', requireAuth, async ctx => {
     }
 
     try {
+        console.log('🔄 Processing buy request:', { url, reservation_cost });
         const requestPayload = await sendPurchaseRequest(url, reservation_cost);
+        console.log('✅ Buy request processed successfully:', requestPayload);
         ctx.body = { message: "Solicitud enviada", request: requestPayload };
     } catch (err) {
-        console.error("Error en /buy:", err);
+        console.error("❌ Error en /buy:", {
+            message: err.message,
+            stack: err.stack,
+            url,
+            reservation_cost
+        });
         ctx.status = 500;
-        ctx.body = { error: "Error al enviar solicitud" };
+        ctx.body = {
+            error: "Error al enviar solicitud",
+            details: err.message,
+            request_id: err.request_id || null
+        };
     }
 });
 
