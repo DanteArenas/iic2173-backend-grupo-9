@@ -13,6 +13,7 @@ if (fs.existsSync(envPath)) {
 
 const Request = require('../web_server/models/Request');
 const client = require('./mqttClient');
+const EventLog = require('../web_server/models/EventLog');
 
 
 
@@ -73,6 +74,11 @@ client.subscribe('properties/validation', (err) => {
     else console.error('❌ Error al suscribirse:', err);
 });
 
+client.subscribe('properties/requests', (err) => {
+    if (!err) console.log('✅ Suscrito a properties/requests');
+    else console.error('❌ Error al suscribirse:', err);
+});
+
 // =========================
 // Handlers de mensajes
 // =========================
@@ -91,6 +97,12 @@ client.on('message', async (topic, message) => {
         } catch (err) {
         console.error('❌ Error procesando propiedad:', err);
         }
+
+        await EventLog.create({
+            type: 'PROPERTY_INFO',
+            payload: property,
+            related_request_id: null,
+      });
     }
 
     if (topic === 'properties/validation') {
@@ -113,6 +125,53 @@ client.on('message', async (topic, message) => {
         }
         } catch (err) {
         console.error('❌ Error procesando validación:', err);
+        }
+
+        await EventLog.create({
+            type: `VALIDATION_${status.toUpperCase()}`, 
+            payload: validation,
+            related_request_id: request_id,
+        });
+    }
+
+    if (topic === 'properties/requests') {
+        try {
+            const requestMsg = JSON.parse(message.toString());
+            console.log("📩 Request recibida:", requestMsg);
+
+            const { request_id, group_id, url, operation } = requestMsg;
+
+            
+            if (String(group_id) === String(process.env.GROUP_ID)) {
+                console.log(`Request ${request_id} es de mi grupo (${group_id}), ignorando.`);
+                return;
+            }
+
+            
+            console.log(` Request de otro grupo (${group_id}), registrando...`);
+
+            await Request.create({
+                request_id,
+                property_url: url,
+                amount_clp: 0, // monto?
+                status: "OK",
+                reason: `Request recibida de grupo ${group_id}`,
+            });
+
+
+            const property = await Property.findOne({ where: { url } });
+            if (property && property.available_visits > 0) {
+                await property.update({ available_visits: property.available_visits - 1 });
+            }
+
+            await EventLog.create({
+                type: 'REQUEST_OTHER_GROUP',
+                payload: requestMsg,
+                related_request_id: request_id,
+            });
+
+        } catch (err) {
+            console.error("Error procesando request:", err);
         }
     }
 });
