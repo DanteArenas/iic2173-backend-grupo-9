@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
   request_id      UUID NOT NULL UNIQUE,
   user_id         INTEGER NULL,
   property_url    TEXT   NOT NULL,
-  amount_clp      INTEGER NULL, 
+  amount_clp      INTEGER NULL,
   status          purchase_status NOT NULL DEFAULT 'OK',
   reason          TEXT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
