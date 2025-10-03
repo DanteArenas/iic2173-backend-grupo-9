@@ -8,6 +8,7 @@ if (fs.existsSync(envPath)) {
 } else {
     dotenv.config();
 }
+const sendPurchaseRequest = require('../listener/sendPurchaseRequest');
 
 const Koa = require('koa');
 const { koaBody } = require('koa-body');
@@ -18,7 +19,9 @@ const cors = require('@koa/cors');
 const sequelize = require('./database');
 const Property = require('./models/Property');
 const User = require('./models/User');
+const Request = require('./models/Request'); // 👈 nuevo
 const { getUfValue } = require('./services/ufService');
+const { v4: uuidv4 } = require('uuid');
 
 const { Op } = require('sequelize');
 
@@ -52,7 +55,6 @@ const buildCorsOptions = () => {
 };
 
 app.use(cors(buildCorsOptions()));
-
 app.use(koaBody());
 
 const createAuthMiddleware = () => {
@@ -97,6 +99,7 @@ app.use(async (ctx, next) => {
     }
 });
 
+// --- VALIDACIONES PROPERTY ---
 const validatePropertyPayload = payload => {
     const errors = [];
 
@@ -165,7 +168,7 @@ const validatePropertyPayload = payload => {
     return { isValid: errors.length === 0, errors, value: sanitized };
 };
 
-
+// --- RESERVATION ---
 const RESERVATION_RATE = 0.1;
 const normalizeCurrency = currency => typeof currency === 'string'
     ? currency.trim().toUpperCase()
@@ -189,9 +192,10 @@ const computeReservationCost = async property => {
     return Math.round(property.price * RESERVATION_RATE);
 };
 
-
+// --- ROUTES ---
 const router = new Router();
 
+// /me
 router.get('/me', requireAuth, async ctx => {
     const tokenPayload = ctx.state.user || {};
     const auth0UserId = tokenPayload.sub;
@@ -239,7 +243,7 @@ router.get('/me', requireAuth, async ctx => {
     };
 });
 
-// post /properties
+// /properties POST
 router.post('/properties', requireAuth, async ctx => {
     try {
         const { isValid, errors, value: property } = validatePropertyPayload(ctx.request.body);
@@ -259,7 +263,6 @@ router.post('/properties', requireAuth, async ctx => {
             console.warn('⚠️  Unable to compute reservation cost, continuing without it', calcError);
         }
 
-        // Buscar si ya existe por URL
         const result = await Property.findOne({
             where: sequelize.where(
                 sequelize.json('data.url'),
@@ -273,15 +276,10 @@ router.post('/properties', requireAuth, async ctx => {
                 visits: sequelize.literal('COALESCE(visits, 0) + 1'),
                 updated_at: property.timestamp
             };
-
             if (reservationCost !== null) {
                 updates.reservation_cost = reservationCost;
             }
-
-            await Property.update(
-                updates,
-                { where: { id: result.id } }
-            );
+            await Property.update(updates, { where: { id: result.id } });
             console.log("♻️ Propiedad repetida, visitas incrementadas", { id: result.id });
             ctx.status = 200;
         } else {
@@ -301,17 +299,13 @@ router.post('/properties', requireAuth, async ctx => {
 });
 
 // TODO: estandarizar las monedas de los precios
-
-// RF1, 3 y 4
-// get /properties
+// /properties GET
 router.get('/properties', requireAuth, async ctx => {
     try {
         const { page = 1, limit = 25, price, location, date, currency } = ctx.query;
         const offset = (page - 1) * limit;
 
-        // Construir el array de condiciones where para Sequelize
         const where = [];
-        // Filtros sobre el campo data (JSONB)
         if (price) {
             where.push(
                 sequelize.where(
@@ -319,7 +313,6 @@ router.get('/properties', requireAuth, async ctx => {
                     { [Op.lt]: parseFloat(price) }
                 )
             );
-            // Si no se recibe currency el default es CLP
             where.push(
                 sequelize.where(
                     sequelize.json('data.currency'),
@@ -358,8 +351,7 @@ router.get('/properties', requireAuth, async ctx => {
     }
 });
 
-// RF2
-// /properties/{:id}
+// /properties/:id GET
 router.get('/properties/:id', requireAuth, async ctx => {
     const { id } = ctx.params;
     try {
@@ -377,7 +369,27 @@ router.get('/properties/:id', requireAuth, async ctx => {
     }
 });
 
+// --- RF5: BUY ---
+router.post('/buy', requireAuth, async ctx => {
+    const { url, reservation_cost } = ctx.request.body;
 
+    if (!url || !reservation_cost) {
+        ctx.status = 400;
+        ctx.body = { error: "URL y reservation_cost son requeridos" };
+        return;
+    }
+
+    try {
+        const requestPayload = await sendPurchaseRequest(url, reservation_cost);
+        ctx.body = { message: "Solicitud enviada", request: requestPayload };
+    } catch (err) {
+        console.error("Error en /buy:", err);
+        ctx.status = 500;
+        ctx.body = { error: "Error al enviar solicitud" };
+    }
+});
+
+// --- APP ---
 app.use(router.routes()).use(router.allowedMethods());
 
 const PORT = process.env.APP_PORT || 3000;

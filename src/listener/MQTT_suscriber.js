@@ -1,6 +1,8 @@
 const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
+const axios = require('axios');
+
 
 const envPath = path.resolve(__dirname, '../../.env');
 if (fs.existsSync(envPath)) {
@@ -9,12 +11,14 @@ if (fs.existsSync(envPath)) {
     dotenv.config();
 }
 
-const mqtt = require('mqtt')
+const Request = require('../web_server/models/Request');
+const client = require('./mqttClient');
 
-const axios = require('axios');
 
-const url = `mqtt://${process.env.HOST}:${process.env.PORT}`;
 
+// =========================
+// Fetch de machine token
+// =========================
 const auth0IssuerBaseUrl = process.env.AUTH0_ISSUER_BASE_URL;
 const auth0Audience = process.env.AUTH0_AUDIENCE;
 const auth0ClientId = process.env.AUTH0_CLIENT_ID;
@@ -50,64 +54,65 @@ const fetchMachineToken = async () => {
     });
 
     const { access_token: accessToken, expires_in: expiresIn } = tokenResponse.data;
-    if (!accessToken) {
-        throw new Error('Auth0 token response missing access_token');
-    }
-
     cachedMachineToken = accessToken;
     cachedMachineTokenExpiry = now + Math.max((expiresIn || 60) - 10, 10) * 1000;
 
     return cachedMachineToken;
 };
 
-const options = {
-    // Clean session
-    clean: true,
-    connectTimeout: 4000,
-    // Authentication
-    username: process.env.USER_mqtt,
-    password: process.env.PASSWORD,
-}
-
-console.log('Conectando al broker MQTT en %s\n', url);
-
-const client = mqtt.connect(url, options)
-
-client.on('connect', () => {
-    console.log('Conectado al broker');
-    client.subscribe('properties/info', (err) => {
-        if (!err) {
-            console.log('Suscrito a properties/info');
-        }
-        else {
-            console.error('Error al suscribirse:', err);
-        }
-    });
+// =========================
+// Suscripciones
+// =========================
+client.subscribe('properties/info', (err) => {
+    if (!err) console.log('✅ Suscrito a properties/info');
+    else console.error('❌ Error al suscribirse:', err);
 });
 
-client.on('error', (err) => {
-    console.error('❌ Error de conexión MQTT:', err);
-    client.end();
+client.subscribe('properties/validation', (err) => {
+    if (!err) console.log('✅ Suscrito a properties/validation');
+    else console.error('❌ Error al suscribirse:', err);
 });
 
-// POST de la propiedad en la api
+// =========================
+// Handlers de mensajes
+// =========================
 client.on('message', async (topic, message) => {
     if (topic === 'properties/info') {
         try {
-            const property = JSON.parse(message.toString());
-            console.log('Propiedad recibida:', property);
+        const property = JSON.parse(message.toString());
+        console.log('📩 Propiedad recibida:', property);
 
-            // Mandar a la API con autenticación
-            const machineToken = await fetchMachineToken();
-            await axios.post(`${process.env.API_URL}/properties`, property, {
-                headers: {
-                    Authorization: `Bearer ${machineToken}`,
-                },
-            });
+        const machineToken = await fetchMachineToken();
+        await axios.post(`${process.env.API_URL}/properties`, property, {
+            headers: { Authorization: `Bearer ${machineToken}` },
+        });
 
-            console.log("📩 Propiedad enviada a la API");
+        console.log("📤 Propiedad enviada a la API");
         } catch (err) {
-            console.error('❌ Error procesando mensaje:', err);
+        console.error('❌ Error procesando propiedad:', err);
+        }
+    }
+
+    if (topic === 'properties/validation') {
+        try {
+        const validation = JSON.parse(message.toString());
+        console.log("📩 Validación recibida:", validation);
+
+        const { request_id, status, reason } = validation;
+
+        const request = await Request.findOne({ where: { request_id } });
+        if (request) {
+            await request.update({
+            status: status.toUpperCase(),
+            reason: reason || null,
+            updated_at: new Date()
+            });
+            console.log(`🔄 Request ${request_id} actualizado con estado ${status}`);
+        } else {
+            console.warn(`⚠️ Request ${request_id} no encontrado en DB`);
+        }
+        } catch (err) {
+        console.error('❌ Error procesando validación:', err);
         }
     }
 });
