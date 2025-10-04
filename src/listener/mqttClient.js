@@ -1,3 +1,4 @@
+require('newrelic');
 const mqtt = require('mqtt');
 const path = require('path');
 const fs = require('fs');
