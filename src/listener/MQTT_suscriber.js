@@ -1,3 +1,4 @@
+require('newrelic');
 const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
@@ -152,13 +153,13 @@ client.on('message', async (topic, message) => {
 
             const { request_id, group_id, url, operation } = requestMsg;
 
-            
+
             if (String(group_id) === String(process.env.GROUP_ID)) {
                 console.log(`Request ${request_id} es de mi grupo (${group_id}), ignorando.`);
                 return;
             }
 
-            
+
             console.log(` Request de otro grupo (${group_id}), registrando...`);
 
             await Request.create({

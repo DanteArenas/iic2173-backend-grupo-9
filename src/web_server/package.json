@@ -20,7 +20,9 @@
     "mqtt": "^5.14.1",
     "nodemon": "^3.1.10",
     "pg": "^8.16.3",
-    "sequelize": "^6.37.7"
+    "sequelize": "^6.37.7",
+    "jwks-rsa": "^3.1.0",
+    "newrelic": "latest"
   },
   "description": ""
 }

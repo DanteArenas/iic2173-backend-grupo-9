@@ -1,4 +1,5 @@
 // src/listener/sendPurchaseRequest.js
+require('newrelic');
 const { v4: uuidv4 } = require('uuid');
 const Request = require('../models/Request');
 const client = require('./mqttClient');
