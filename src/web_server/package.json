@@ -4,22 +4,23 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "nodemon app.js"
+    "start": "node app.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
-    "@koa/router": "^14.0.0",
     "@koa/cors": "^5.0.0",
+    "@koa/router": "^14.0.0",
     "dotenv": "^17.2.1",
+    "jwks-rsa": "^3.1.0",
     "koa": "^3.0.1",
     "koa-body": "^6.0.1",
     "koa-jwt": "^4.0.4",
+    "mqtt": "^5.14.1",
     "nodemon": "^3.1.10",
     "pg": "^8.16.3",
-    "sequelize": "^6.37.7",
-    "jwks-rsa": "^3.1.0"
-  }
+    "sequelize": "^6.37.7"
+  },
+  "description": ""
 }

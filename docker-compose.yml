@@ -36,8 +36,9 @@ services:
     networks:
       - app-network
     volumes:
-      - ./src/listener:/app
-      - /app/node_modules
+      - ./src/listener/MQTT_suscriber.js:/app/MQTT_suscriber.js
+      - ./src/listener/mqttClient.js:/app/mqttClient.js
+      - ./src/listener/sendPurchaseRequest.js:/app/sendPurchaseRequest.js
       - ./src/web_server:/web_server
 
   # Web Server Service
