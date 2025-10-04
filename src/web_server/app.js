@@ -425,6 +425,31 @@ router.post('/properties/buy', requireAuth, async ctx => {
     }
 });
 
+// /reservations GET
+router.get('/reservations', requireAuth, async ctx => {
+    let user;
+    try {
+        user = await getOrCreateUserFromToken(ctx.state.user || {});
+    } catch (err) {
+        ctx.status = 400;
+        ctx.body = { error: 'Invalid token payload', message: err.message };
+        return;
+    }
+
+    try {
+        const reservations = await Request.findAll({
+            where: { user_id: user.id },
+            order: [['created_at', 'DESC']],
+        });
+
+        ctx.body = reservations.map(reservation => reservation.toJSON());
+    } catch (err) {
+        console.error('Error fetching reservations:', err);
+        ctx.status = 500;
+        ctx.body = { error: 'Internal server error' };
+    }
+});
+
 // --- APP ---
 app.use(router.routes()).use(router.allowedMethods());
 
