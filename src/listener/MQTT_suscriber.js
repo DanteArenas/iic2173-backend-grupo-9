@@ -18,6 +18,41 @@ const EventLog = require('../web_server/models/EventLog');
 const client = require('./mqttClient');
 
 
+const getFibonacciDelay = (attemptNumber, baseDelay = 1000, maxDelay = 30000) => {
+    if (attemptNumber <= 0) return baseDelay;
+
+    let a = 1, b = 1;
+    for (let i = 2; i <= attemptNumber; i++) {
+        const temp = a + b;
+        a = b;
+        b = temp;
+    }
+
+    const delay = Math.min(b * baseDelay, maxDelay);
+    return delay;
+};
+
+// Función para retry con delay fibonacci para requests HTTP
+async function retryHttpRequest(operation, maxAttempts = 5, context = 'HTTP request') {
+    let lastError;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            return await operation();
+        } catch (error) {
+            lastError = error;
+            console.error(`❌ Error en ${context} (intento ${attempt + 1}/${maxAttempts}):`, error.message);
+
+            if (attempt < maxAttempts - 1) {
+                const delay = getFibonacciDelay(attempt + 1);
+                console.log(`🔄 Reintentando ${context} en ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
+
+    throw new Error(`${context} falló después de ${maxAttempts} intentos: ${lastError.message}`);
+}
 
 // =========================
 // Fetch de machine token
@@ -47,14 +82,18 @@ const fetchMachineToken = async () => {
         return cachedMachineToken;
     }
 
-    const tokenResponse = await axios.post(auth0TokenUrl, {
-        grant_type: 'client_credentials',
-        client_id: auth0ClientId,
-        client_secret: auth0ClientSecret,
-        audience: auth0Audience,
-    }, {
-        headers: { 'Content-Type': 'application/json' },
-    });
+    // Usar retry para obtener el token
+    const tokenResponse = await retryHttpRequest(async () => {
+        return await axios.post(auth0TokenUrl, {
+            grant_type: 'client_credentials',
+            client_id: auth0ClientId,
+            client_secret: auth0ClientSecret,
+            audience: auth0Audience,
+        }, {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 10000, // 10 segundos de timeout
+        });
+    }, 3, 'obtención de token Auth0');
 
     const { access_token: accessToken, expires_in: expiresIn } = tokenResponse.data;
     cachedMachineToken = accessToken;
@@ -64,21 +103,18 @@ const fetchMachineToken = async () => {
 };
 
 // =========================
-// Suscripciones
+// Suscripciones con retry
 // =========================
-client.subscribe('properties/info', (err) => {
-    if (!err) console.log('✅ Suscrito a properties/info');
-    else console.error('❌ Error al suscribirse:', err);
-});
+const subscribeToTopics = () => {
+    client.subscribe('properties/info');
+    client.subscribe('properties/validation');
+    client.subscribe('properties/requests');
+};
 
-client.subscribe('properties/validation', (err) => {
-    if (!err) console.log('✅ Suscrito a properties/validation');
-    else console.error('❌ Error al suscribirse:', err);
-});
-
-client.subscribe('properties/requests', (err) => {
-    if (!err) console.log('✅ Suscrito a properties/requests');
-    else console.error('❌ Error al suscribirse:', err);
+// Suscribirse después de conectar
+client.on('connect', () => {
+    console.log('🔌 Cliente MQTT conectado, suscribiéndose a topics...');
+    subscribeToTopics();
 });
 
 // =========================
@@ -91,10 +127,14 @@ client.on('message', async (topic, message) => {
             property = JSON.parse(message.toString());
             console.log('📩 Propiedad recibida:', property);
 
-            const machineToken = await fetchMachineToken();
-            await axios.post(`${process.env.API_URL}/properties`, property, {
-                headers: { Authorization: `Bearer ${machineToken}` },
-            });
+            // Usar retry para enviar la propiedad a la API
+            await retryHttpRequest(async () => {
+                const machineToken = await fetchMachineToken();
+                return await axios.post(`${process.env.API_URL}/properties`, property, {
+                    headers: { Authorization: `Bearer ${machineToken}` },
+                    timeout: 10000, // 10 segundos de timeout
+                });
+            }, 5, 'envío de propiedad a API');
 
             console.log('📤 Propiedad enviada a la API');
         } catch (err) {

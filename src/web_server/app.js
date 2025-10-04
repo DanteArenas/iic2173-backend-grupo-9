@@ -401,6 +401,111 @@ router.post('/properties/buy', requireAuth, async ctx => {
     }
 });
 
+// --- RETRY FAILED REQUESTS ---
+router.post('/requests/:requestId/retry', requireAuth, async ctx => {
+    const { requestId } = ctx.params;
+
+    try {
+        // Buscar el request fallido (usando ERROR + can_retry para identificar fallos técnicos)
+        const request = await Request.findOne({
+            where: {
+                request_id: requestId,
+                status: 'ERROR',
+                can_retry: true,
+                retry_count: 0  // Solo permitir un retry
+            }
+        });
+
+        if (!request) {
+            ctx.status = 404;
+            ctx.body = {
+                error: "Request no encontrado o no disponible para retry",
+                details: "El request debe estar en estado ERROR con can_retry=true y no haber sido reintentado previamente"
+            };
+            return;
+        }
+
+        console.log('🔄 Retrying failed request:', { requestId, url: request.property_url });
+
+        // Marcar como reintentado
+        await request.update({
+            retry_count: 1,
+            can_retry: false,
+            status: 'OK',  // Reset status para el retry
+            reason: 'Manual retry initiated'
+        });
+
+        try {
+            // Reintentar el envío
+            const requestPayload = await sendPurchaseRequest(request.property_url, request.amount_clp);
+            console.log('✅ Retry successful:', requestPayload);
+
+            ctx.body = {
+                message: "Request reintentado exitosamente",
+                request: requestPayload,
+                original_request_id: requestId
+            };
+        } catch (retryErr) {
+            // Si el retry falla, marcar como definitivamente fallido
+            await request.update({
+                status: 'ERROR',
+                reason: `Retry failed: ${retryErr.message}`,
+                can_retry: false
+            });
+
+            console.error("❌ Retry failed:", retryErr);
+            ctx.status = 500;
+            ctx.body = {
+                error: "Error al reintentar solicitud",
+                details: retryErr.message,
+                request_id: requestId
+            };
+        }
+
+    } catch (err) {
+        console.error("❌ Error en retry endpoint:", err);
+        ctx.status = 500;
+        ctx.body = {
+            error: "Error interno del servidor",
+            details: err.message
+        };
+    }
+});
+
+// --- GET FAILED REQUESTS ---
+router.get('/requests/failed', requireAuth, async ctx => {
+    try {
+        const failedRequests = await Request.findAll({
+            where: {
+                status: 'ERROR',
+                can_retry: true,
+                retry_count: 0
+            },
+            order: [['created_at', 'DESC']],
+            limit: 50  // Limitar a 50 requests fallidos más recientes
+        });
+
+        ctx.body = {
+            failed_requests: failedRequests.map(req => ({
+                request_id: req.request_id,
+                property_url: req.property_url,
+                amount_clp: req.amount_clp,
+                reason: req.reason,
+                created_at: req.created_at,
+                can_retry: req.can_retry,
+                retry_count: req.retry_count
+            }))
+        };
+    } catch (err) {
+        console.error("❌ Error obteniendo requests fallidos:", err);
+        ctx.status = 500;
+        ctx.body = {
+            error: "Error interno del servidor",
+            details: err.message
+        };
+    }
+});
+
 // --- APP ---
 app.use(router.routes()).use(router.allowedMethods());
 

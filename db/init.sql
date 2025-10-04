@@ -62,6 +62,17 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Agregar columnas de retry si no existen (para bases de datos existentes)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='purchase_requests' AND column_name='retry_count') THEN
+    ALTER TABLE purchase_requests ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='purchase_requests' AND column_name='can_retry') THEN
+    ALTER TABLE purchase_requests ADD COLUMN can_retry BOOLEAN NOT NULL DEFAULT FALSE;
+  END IF;
+END$$;
+
 -- Índices útiles
 CREATE INDEX IF NOT EXISTS idx_purchase_requests_url    ON purchase_requests (property_url);
 CREATE INDEX IF NOT EXISTS idx_purchase_requests_status ON purchase_requests (status);
