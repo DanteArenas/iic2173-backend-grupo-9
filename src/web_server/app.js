@@ -196,20 +196,17 @@ const computeReservationCost = async property => {
 // --- ROUTES ---
 const router = new Router();
 
-// /me
-router.get('/me', requireAuth, async ctx => {
-    const tokenPayload = ctx.state.user || {};
-    const auth0UserId = tokenPayload.sub;
+const getOrCreateUserFromToken = async tokenPayload => {
+    const payload = tokenPayload || {};
+    const auth0UserId = payload.sub;
 
     if (!auth0UserId) {
-        ctx.status = 400;
-        ctx.body = { error: 'Invalid token payload', message: 'sub claim is required' };
-        return;
+        throw new Error('sub claim is required');
     }
 
-    const emailClaim = typeof tokenPayload.email === 'string' ? tokenPayload.email.toLowerCase() : null;
-    const nameClaim = typeof tokenPayload.name === 'string' && tokenPayload.name.trim() !== ''
-        ? tokenPayload.name.trim()
+    const emailClaim = typeof payload.email === 'string' ? payload.email.toLowerCase() : null;
+    const nameClaim = typeof payload.name === 'string' && payload.name.trim() !== ''
+        ? payload.name.trim()
         : null;
 
     const defaultName = nameClaim || emailClaim || 'Auth0 User';
@@ -235,13 +232,24 @@ router.get('/me', requireAuth, async ctx => {
         await user.update(updates);
     }
 
-    ctx.body = {
-        id: user.id,
-        full_name: user.full_name,
-        email: user.email,
-        phone: user.phone,
-        auth0_user_id: user.auth0_user_id,
-    };
+    return user;
+};
+
+// /me
+router.get('/me', requireAuth, async ctx => {
+    try {
+        const user = await getOrCreateUserFromToken(ctx.state.user || {});
+        ctx.body = {
+            id: user.id,
+            full_name: user.full_name,
+            email: user.email,
+            phone: user.phone,
+            auth0_user_id: user.auth0_user_id,
+        };
+    } catch (err) {
+        ctx.status = 400;
+        ctx.body = { error: 'Invalid token payload', message: err.message };
+    }
 });
 
 // /properties POST
@@ -382,9 +390,25 @@ router.post('/properties/buy', requireAuth, async ctx => {
 
     try {
         console.log('🔄 Processing buy request:', { url, reservation_cost });
-        const requestPayload = await sendPurchaseRequest(url, reservation_cost);
+
+        let user;
+        try {
+            user = await getOrCreateUserFromToken(ctx.state.user || {});
+        } catch (err) {
+            ctx.status = 400;
+            ctx.body = { error: 'Invalid token payload', message: err.message };
+            return;
+        }
+
+        const requestPayload = await sendPurchaseRequest(url, reservation_cost, user.id);
         console.log('✅ Buy request processed successfully:', requestPayload);
-        ctx.body = { message: "Solicitud enviada", request: requestPayload };
+        ctx.body = {
+            message: "Solicitud enviada",
+            request: {
+                ...requestPayload,
+                user_id: user.id,
+            }
+        };
     } catch (err) {
         console.error("❌ Error en /buy:", {
             message: err.message,

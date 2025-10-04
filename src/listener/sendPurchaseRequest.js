@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const Request = require('../models/Request');
 const client = require('./mqttClient');
 
-async function sendPurchaseRequest(url, reservationCost) {
+async function sendPurchaseRequest(url, reservationCost, userId) {
     return new Promise(async (resolve, reject) => {
         const requestId = uuidv4();
         const timestamp = new Date().toISOString();
@@ -16,6 +16,7 @@ async function sendPurchaseRequest(url, reservationCost) {
                 property_url: url,
                 amount_clp: reservationCost,
                 status: "OK",
+                user_id: userId ?? null,
             });
             console.log('✅ Request created successfully');
 
