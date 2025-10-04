@@ -27,7 +27,9 @@
     "koa": "^3.0.1",
     "koa-router": "^14.0.0",
     "mqtt": "^5.14.0",
-    "uuid": "^8.3.2",
-    "newrelic": "latest"
+    "newrelic": "latest",
+    "pg": "^8.16.3",
+    "sequelize": "^6.37.7",
+    "uuid": "^8.3.2"
   }
 }
