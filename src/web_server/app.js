@@ -10,6 +10,7 @@ if (fs.existsSync(envPath)) {
     dotenv.config();
 }
 const sendPurchaseRequest = require('./listener/sendPurchaseRequest');
+const republishPurchaseRequest = require('./listener/republishPurchaseRequest');
 
 const Koa = require('koa');
 const { koaBody } = require('koa-body');
@@ -26,8 +27,28 @@ const { v4: uuidv4 } = require('uuid');
 
 const { Op } = require('sequelize');
 
+// Ensure DB schema upgrades for existing databases (idempotent)
+async function ensureDbSchemaUpgrades() {
+    try {
+        await sequelize.query(
+            `ALTER TABLE purchase_requests
+             ADD COLUMN IF NOT EXISTS retry_used BOOLEAN NOT NULL DEFAULT FALSE`
+        );
+        await sequelize.query(
+            `CREATE INDEX IF NOT EXISTS idx_purchase_requests_retry_used
+             ON purchase_requests (retry_used)`
+        );
+        console.log('✅ Esquema verificado: columna retry_used lista.');
+    } catch (err) {
+        console.warn('⚠️  No se pudo asegurar el esquema (retry_used):', err.message || err);
+    }
+}
+
 sequelize.authenticate()
-    .then(() => console.log('Conexión exitosa a la base de datos con Sequelize'))
+    .then(async () => {
+        console.log('Conexión exitosa a la base de datos con Sequelize');
+        await ensureDbSchemaUpgrades();
+    })
     .catch(err => console.error('Error de conexión con Sequelize:', err));
 
 const Router = require('@koa/router');
@@ -447,6 +468,77 @@ router.get('/reservations', requireAuth, async ctx => {
         console.error('Error fetching reservations:', err);
         ctx.status = 500;
         ctx.body = { error: 'Internal server error' };
+    }
+});
+
+// /reservations/:request_id/retry POST - permitir un (1) reintento por solicitud fallida
+router.post('/reservations/:request_id/retry', requireAuth, async ctx => {
+    const { request_id } = ctx.params;
+
+    let user;
+    try {
+        user = await getOrCreateUserFromToken(ctx.state.user || {});
+    } catch (err) {
+        ctx.status = 400;
+        ctx.body = { error: 'Invalid token payload', message: err.message };
+        return;
+    }
+
+    if (!request_id) {
+        ctx.status = 400;
+        ctx.body = { error: 'Missing request_id' };
+        return;
+    }
+
+    try {
+        const request = await Request.findOne({ where: { request_id } });
+        if (!request) {
+            ctx.status = 404;
+            ctx.body = { error: 'Request not found' };
+            return;
+        }
+
+        if (request.user_id !== user.id) {
+            ctx.status = 403;
+            ctx.body = { error: 'Forbidden' };
+            return;
+        }
+
+        const status = String(request.status || '').toUpperCase();
+        if (!['ERROR', 'REJECTED'].includes(status)) {
+            ctx.status = 400;
+            ctx.body = { error: 'Only failed requests can be retried' };
+            return;
+        }
+
+        if (request.retry_used) {
+            ctx.status = 400;
+            ctx.body = { error: 'Retry already used for this request' };
+            return;
+        }
+
+        // Re-publicar en MQTT con el mismo request_id primero
+        const payload = await republishPurchaseRequest(request_id);
+
+        // Marcar como reintento usado y resetear estado a OK tras publicación exitosa
+        await request.update({ retry_used: true, status: 'OK', reason: null });
+
+        ctx.body = {
+            message: 'Solicitud reintentada',
+            request: {
+                request_id: request.request_id,
+                user_id: request.user_id,
+                property_url: request.property_url,
+                amount_clp: request.amount_clp,
+                status: request.status,
+                retry_used: true,
+                payload,
+            },
+        };
+    } catch (err) {
+        console.error('❌ Error en retry:', err);
+        ctx.status = 500;
+        ctx.body = { error: 'Internal server error', details: err.message };
     }
 });
 
