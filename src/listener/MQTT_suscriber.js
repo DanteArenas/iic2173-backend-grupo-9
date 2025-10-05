@@ -14,6 +14,7 @@ if (fs.existsSync(envPath)) {
 
 const Request = require('../web_server/models/Request');
 const Property = require('../web_server/models/Property');
+const sequelize = require('../web_server/database');
 const EventLog = require('../web_server/models/EventLog');
 const client = require('./mqttClient');
 
@@ -211,7 +212,12 @@ client.on('message', async (topic, message) => {
             });
 
 
-            const property = await Property.findOne({ where: { url } });
+            const property = await Property.findOne({
+                where: sequelize.where(
+                    sequelize.json('data.url'),
+                    url
+                ),
+            });
             if (property && property.available_visits > 0) {
                 await property.update({ available_visits: property.available_visits - 1 });
             }

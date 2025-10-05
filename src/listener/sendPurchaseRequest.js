@@ -55,6 +55,7 @@ async function sendPurchaseRequest(url, reservationCost) {
                 property_url: url,
                 amount_clp: reservationCost,
                 status: "OK",
+                user_id: userId ?? null,
             });
         }, 3, 'creación en base de datos');
 
