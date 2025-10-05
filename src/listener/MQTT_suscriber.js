@@ -17,6 +17,7 @@ const Property = require('../web_server/models/Property');
 const sequelize = require('../web_server/database');
 const EventLog = require('../web_server/models/EventLog');
 const client = require('./mqttClient');
+const { withFibonacciRetry } = require('./retry');
 
 
 
@@ -67,19 +68,34 @@ const fetchMachineToken = async () => {
 // =========================
 // Suscripciones
 // =========================
-client.subscribe('properties/info', (err) => {
-    if (!err) console.log('✅ Suscrito a properties/info');
-    else console.error('❌ Error al suscribirse:', err);
-});
+async function subscribeWithRetry(topic) {
+    await withFibonacciRetry(() => new Promise((resolve, reject) => {
+        client.subscribe(topic, (err) => {
+            if (err) return reject(err);
+            resolve();
+        });
+    }), {
+        onAttempt: ({ attempt, delay, error }) => {
+            if (error) console.warn(`Reintentando suscripción a ${topic}. Intento ${attempt}. Próximo intento en ${delay}ms. Motivo:`, error.message || error);
+        },
+    });
+    console.log(`✅ Suscrito a ${topic}`);
+}
 
-client.subscribe('properties/validation', (err) => {
-    if (!err) console.log('✅ Suscrito a properties/validation');
-    else console.error('❌ Error al suscribirse:', err);
-});
+async function subscribeAllTopics() {
+    await Promise.all([
+        subscribeWithRetry('properties/info'),
+        subscribeWithRetry('properties/validation'),
+        subscribeWithRetry('properties/requests'),
+    ]);
+}
 
-client.subscribe('properties/requests', (err) => {
-    if (!err) console.log('✅ Suscrito a properties/requests');
-    else console.error('❌ Error al suscribirse:', err);
+client.on('connect', async () => {
+    try {
+        await subscribeAllTopics();
+    } catch (err) {
+        console.error('❌ Falló la resuscripción tras reconexión:', err);
+    }
 });
 
 // =========================

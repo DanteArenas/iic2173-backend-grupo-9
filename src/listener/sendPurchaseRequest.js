@@ -3,6 +3,7 @@ require('newrelic');
 const { v4: uuidv4 } = require('uuid');
 const Request = require('../models/Request');
 const client = require('./mqttClient');
+const { withFibonacciRetry } = require('./retry');
 
 async function sendPurchaseRequest(url, reservationCost, userId) {
     return new Promise(async (resolve, reject) => {
@@ -29,15 +30,19 @@ async function sendPurchaseRequest(url, reservationCost, userId) {
                 operation: "BUY",
             };
 
-            console.log('🔄 Publishing to MQTT...', payload);
-            client.publish("properties/requests", JSON.stringify(payload), (err) => {
-                if (err) {
-                    console.error('❌ MQTT publish error:', err);
-                    return reject(err);
-                }
-                console.log("📤 Solicitud publicada en MQTT:", payload);
-                resolve(payload);
+            console.log('🔄 Publishing to MQTT with retry...', payload);
+            await withFibonacciRetry(() => new Promise((resolvePublish, rejectPublish) => {
+                client.publish("properties/requests", JSON.stringify(payload), (err) => {
+                    if (err) return rejectPublish(err);
+                    resolvePublish();
+                });
+            }), {
+                onAttempt: ({ attempt, delay, error }) => {
+                    if (error) console.warn(`Reintentando publish properties/requests. Intento ${attempt}. Próximo intento en ${delay}ms. Motivo:`, error.message || error);
+                },
             });
+            console.log("📤 Solicitud publicada en MQTT:", payload);
+            resolve(payload);
         } catch (err) {
             console.error('❌ Error in sendPurchaseRequest:', err);
             reject(err);
