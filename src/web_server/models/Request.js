@@ -25,13 +25,23 @@ const Request = sequelize.define('Request', {
         allowNull: false,
     },
     status: {
-    type: DataTypes.ENUM('OK', 'ACCEPTED', 'REJECTED', 'ERROR'),
-    allowNull: false,
-    defaultValue: 'OK', 
+        type: DataTypes.ENUM('OK', 'ACCEPTED', 'REJECTED', 'ERROR'),
+        allowNull: false,
+        defaultValue: 'OK',
     },
     reason: {
         type: DataTypes.TEXT,
         allowNull: true,
+    },
+    retry_count: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+    },
+    can_retry: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
     },
     created_at: {
         type: DataTypes.DATE,
@@ -43,7 +53,7 @@ const Request = sequelize.define('Request', {
         allowNull: false,
         defaultValue: DataTypes.NOW,
     },
-    }, {
+}, {
     tableName: 'purchase_requests',
     freezeTableName: true,
     timestamps: false,
