@@ -92,6 +92,18 @@ BEGIN
   END IF;
 END$$;
 
+-- Campo retry_used en purchase_requests (permitir solo un reintento por solicitud)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='purchase_requests' AND column_name='retry_used'
+  ) THEN
+    ALTER TABLE purchase_requests ADD COLUMN retry_used BOOLEAN NOT NULL DEFAULT FALSE;
+    CREATE INDEX IF NOT EXISTS idx_purchase_requests_retry_used ON purchase_requests (retry_used);
+  END IF;
+END$$;
+
 -- Trigger para updated_at
 CREATE OR REPLACE FUNCTION touch_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
