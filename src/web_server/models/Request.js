@@ -12,6 +12,11 @@ const Request = sequelize.define('Request', {
         allowNull: false,
         unique: true,
     },
+    buy_order: {
+        type: DataTypes.STRING(26),
+        allowNull: true,
+        unique: true,
+    },
     user_id: {
         type: DataTypes.INTEGER,
         allowNull: true,
@@ -25,7 +30,7 @@ const Request = sequelize.define('Request', {
         allowNull: false,
     },
     status: {
-        type: DataTypes.ENUM('OK', 'ACCEPTED', 'REJECTED', 'ERROR'),
+        type: DataTypes.ENUM('OK', 'ACCEPTED', 'REJECTED', 'ERROR', 'PENDING'),
         allowNull: false,
         defaultValue: 'OK',
     },
@@ -37,6 +42,10 @@ const Request = sequelize.define('Request', {
         type: DataTypes.BOOLEAN,
         allowNull: false,
         defaultValue: false,
+    },
+    deposit_token: {
+        type: DataTypes.TEXT,
+        allowNull: true,
     },
     created_at: {
         type: DataTypes.DATE,
