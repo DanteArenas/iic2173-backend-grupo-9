@@ -143,10 +143,29 @@ client.on('message', async (topic, message) => {
             if (request) {
                 await request.update({
                     status: status.toUpperCase(),
-                    reason: reason || null,
+                    reason: Array.isArray(reason) 
+                        ? reason.map(r => (r.message ? r.message : JSON.stringify(r))).join(", ") 
+                        : (typeof reason === 'object' ? JSON.stringify(reason) : reason),
                     updated_at: new Date(),
                 });
                 console.log(`🔄 Request ${requestId} actualizado con estado ${status}`);
+
+                // 👇 Ajustar visitas según resultado de la validación
+                const property = await Property.findOne({
+                    where: sequelize.where(
+                        sequelize.json('data.url'),
+                        request.property_url
+                    ),
+                });
+
+                if (property) {
+                    if (status.toUpperCase() === "REJECTED" || status.toUpperCase() === "ERROR") {
+                        await property.update({ visits: property.visits + 1 });
+                        console.log(`♻️ Visita devuelta para propiedad ${request.property_url}`);
+                    } else if (status.toUpperCase() === "ACCEPTED") {
+                        console.log(`✅ Visita confirmada para propiedad ${request.property_url}`);
+                    }
+                }
             } else {
                 console.warn(`⚠️ Request ${requestId} no encontrado en DB`);
             }
@@ -162,6 +181,7 @@ client.on('message', async (topic, message) => {
             });
         }
     }
+
 
     if (topic === 'properties/requests') {
         try {
@@ -194,8 +214,8 @@ client.on('message', async (topic, message) => {
                     url
                 ),
             });
-            if (property && property.available_visits > 0) {
-                await property.update({ available_visits: property.available_visits - 1 });
+            if (property && property.visits > 0) {
+                await property.update({ visits: property.visits - 1 });
             }
 
             await EventLog.create({

@@ -34,7 +34,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_auth0_id_unique_idx ON users (auth0_user
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'purchase_status') THEN
-    CREATE TYPE purchase_status AS ENUM ('OK','ACCEPTED','REJECTED','ERROR');
+    CREATE TYPE purchase_status AS ENUM ('OK','ACCEPTED','REJECTED','ERROR', 'PENDING');
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'event_type') THEN
@@ -53,11 +53,13 @@ END$$;
 CREATE TABLE IF NOT EXISTS purchase_requests (
   id              SERIAL PRIMARY KEY,
   request_id      UUID NOT NULL UNIQUE,
+  buy_order       VARCHAR(26) NOT NULL UNIQUE,
   user_id         INTEGER NULL,
   property_url    TEXT   NOT NULL,
   amount_clp      INTEGER NULL,
   status          purchase_status NOT NULL DEFAULT 'OK',
   reason          TEXT NULL,
+  deposit_token   TEXT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
