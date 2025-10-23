@@ -19,10 +19,11 @@
     "koa-body": "^6.0.1",
     "koa-jwt": "^4.0.4",
     "mqtt": "^5.14.1",
+    "newrelic": "latest",
     "nodemon": "^3.1.10",
     "pg": "^8.16.3",
     "sequelize": "^6.37.7",
-    "newrelic": "latest"
+    "transbank-sdk": "^6.1.0"
   },
   "description": ""
 }

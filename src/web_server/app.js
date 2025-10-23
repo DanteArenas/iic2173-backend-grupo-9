@@ -26,7 +26,8 @@ const cors = require('@koa/cors');
 const sequelize = require('./database');
 const Property = require('./models/Property');
 const User = require('./models/User');
-const Request = require('./models/Request');
+const Request = require('./models/Request'); 
+const { createTransaction, commitTransaction, mapWebpayStatus} = require("./services/webpayService")
 const { getUfValue } = require('./services/ufService');
 const { v4: uuidv4 } = require('uuid');
 
@@ -508,6 +509,81 @@ router.get('/properties/:id', requireAuth, async ctx => {
 
 // RF05: /properties/buy
 router.post('/properties/buy', requireAuth, async ctx => {
+    const { url } = ctx.request.body;
+
+    if (!url ) {
+        ctx.status = 400;
+        ctx.body = { error: "URL es requerido" };
+        return;
+    }
+
+    try {
+        console.log('🔄 Processing buy request:', { url });
+
+        let user;
+        try {
+            user = await getOrCreateUserFromToken(ctx.state.user || {});
+        } catch (err) {
+            ctx.status = 400;
+            ctx.body = { error: 'Invalid token payload', message: err.message };
+            return;
+        }
+        // 1. Buscar propiedad en DB
+        const property = await Property.findOne({
+            where: sequelize.where(
+                sequelize.json('data.url'),
+                url
+            ),
+        });
+        if (!property) {
+            ctx.status = 404;
+            ctx.body = { error: "Property not found" };
+            return;
+        }
+        const reservation_cost = await computeReservationCost(property.data);
+        const requestId = uuidv4();
+        const buyOrder = requestId.replace(/-/g, "").substring(0, 26);
+        const returnUrl = process.env.API_LOCAL || 'http://';
+        
+    
+        const tx = await createTransaction(
+            buyOrder,
+            String(user.id),
+            reservation_cost ,
+            `${returnUrl}/webpay/commit`
+        );
+
+        const requestPayload = await sendPurchaseRequest(url, reservation_cost, user.id, tx.token, requestId, buyOrder);
+        // Descontar una visita de la propiedad propia
+        if (property && property.visits > 0) {
+            await property.update({ visits: property.visits - 1 });
+            console.log(`🔽 Visita descontada al reservar propiedad: ${url}`);
+        }
+
+        console.log('✅ Buy request processed successfully:', requestPayload);
+        ctx.body = {
+            message: "Solicitud enviada",
+            request: {
+                ...requestPayload,
+                user_id: user.id,
+                token: tx.token,
+                url: tx.url,
+            }
+        };
+    } catch (err) {
+        console.error("❌ Error en /buy:", {
+            message: err.message,
+            stack: err.stack,
+            url,
+            reservation_cost
+        });
+        ctx.status = 500;
+        ctx.body = {
+            error: "Error al enviar solicitud",
+            details: err.message,
+            request_id: err.request_id || null
+        };
+    }
   const { url, reservation_cost } = ctx.request.body;
 
   if (!url || !reservation_cost) {
@@ -802,6 +878,102 @@ router.get('/reservations/:request_id', requireAuth, async ctx => {
     console.error('❌ Error fetching reservation request details:', err);
     ctx.status = 500;
     ctx.body = { error: 'Internal server error' };
+  }
+});
+//post para actualizar info de webpay
+router.post('/webpay/commit', async ctx => {
+  try {
+    const { token_ws } = ctx.request.body;
+    if (!token_ws) {
+      ctx.status = 400;
+      ctx.body = { error: "token_ws es requerido" };
+      return;
+    }
+
+    // 1. Confirmar transacción con WebPay
+    const result = await commitTransaction(token_ws);
+    console.log("💳 Resultado commit:", result);
+    
+    const mappedStatus = mapWebpayStatus(result);
+    
+    // 2. Actualizar en DB
+    await Request.update(
+      { status: mappedStatus },
+      { where: { deposit_token: token_ws } }
+    );
+    // 🔄 Si falla o se rechaza, devolver la visita
+    if (["REJECTED", "ERROR"].includes(mappedStatus)) {
+        const property = await Property.findOne({
+            where: sequelize.where(
+            sequelize.json('data.url'),
+            request.property_url
+        ),
+        });
+        if (property) {
+            await property.update({ visits: property.visits + 1 });
+            console.log(`🔼 Visita devuelta a propiedad: ${request.property_url}`);
+        }
+    }
+
+    // 3. Publicar validación en broker
+    const payload = {
+      request_id: result.buy_order,
+      timestamp: new Date().toISOString(),
+      status: mappedStatus,
+      reason: result.response_code === 0 ? "Pago aprobado" : "Pago fallido"
+    };
+    client.publish("properties/validation", JSON.stringify(payload));
+    console.log("📤 Enviado a properties/validation:", payload);
+
+    // 4. Responder al frontend
+    ctx.body = {
+      message: "Resultado de la transacción",
+      result
+    };
+  } catch (err) {
+    console.error("❌ Error en /webpay/commit:", err);
+    ctx.status = 500;
+    ctx.body = { error: "Error confirmando transacción", details: err.message };
+  }
+});
+
+router.get('/webpay/commit', async ctx => {
+  const { token_ws, TBK_TOKEN, TBK_ORDEN_COMPRA } = ctx.query;
+
+  try {
+    if (token_ws) {
+      // ✅ Caso normal: commit de transacción
+      const result = await commitTransaction(token_ws);
+      const mappedStatus = mapWebpayStatus(result);
+
+      await Request.update(
+        { status: mappedStatus },
+        { where: { deposit_token: token_ws } }
+      );
+
+      const frontendUrl = process.env.FRONTEND_URL || "http://";
+      ctx.redirect(`${frontendUrl}/payment-result?status=${mappedStatus}&order=${result.buy_order}`);
+
+    } else if (TBK_TOKEN) {
+      // ❌ Caso de anulación por el usuario
+      console.log("🚫 Compra anulada por el usuario:", TBK_TOKEN, TBK_ORDEN_COMPRA);
+
+      await Request.update(
+        { status: "REJECTED", reason: "Usuario anuló la compra" },
+        { where: { buy_order: TBK_ORDEN_COMPRA } }
+      );
+
+      const frontendUrl = process.env.FRONTEND_URL || "http://";
+      ctx.redirect(`${frontendUrl}/payment-result?status=REJECTED&order=${TBK_ORDEN_COMPRA}`);
+
+    } else {
+      ctx.status = 400;
+      ctx.body = { error: "Falta token_ws o TBK_TOKEN en query" };
+    }
+
+  } catch (err) {
+    console.error("❌ Error en GET /webpay/commit:", err);
+    ctx.redirect(`${process.env.FRONTEND_URL}/payment-result?status=ERROR`);
   }
 });
 

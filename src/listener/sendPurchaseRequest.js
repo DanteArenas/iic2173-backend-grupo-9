@@ -4,25 +4,30 @@ const { v4: uuidv4 } = require('uuid');
 const Request = require('../models/Request');
 const client = require('./mqttClient');
 const { withFibonacciRetry } = require('./retry');
+const axios = require("axios");
 
-async function sendPurchaseRequest(url, reservationCost, userId) {
+async function sendPurchaseRequest(url, reservationCost, userId, deposit_token, request_id, buy_order) {
     return new Promise(async (resolve, reject) => {
-        const requestId = uuidv4();
+
         const timestamp = new Date().toISOString();
 
         try {
-            console.log('🔄 Creating request in database...', { requestId, url, reservationCost });
+
+            console.log('🔄 Creating request in database...', { request_id, url, reservationCost });
             await Request.create({
-                request_id: requestId,
+                request_id,
+                buy_order,
                 property_url: url,
                 amount_clp: reservationCost,
-                status: "OK",
+                status: "PENDING",
                 user_id: userId ?? null,
+                deposit_token,
             });
             console.log('✅ Request created successfully');
 
             const payload = {
-                request_id: requestId,
+                request_id,
+                deposit_token,
                 group_id: process.env.GROUP_ID || "9",
                 timestamp,
                 url,
@@ -38,7 +43,7 @@ async function sendPurchaseRequest(url, reservationCost, userId) {
                 });
             }), {
                 onAttempt: ({ attempt, delay, error }) => {
-                    if (error) console.warn(`Reintentando publish properties/requests. Intento ${attempt}. Próximo intento en ${delay}ms. Motivo:`, error.message || error);
+                    if (error) console.warn(`Reintentando publish properties/requests. Intento ${attempt}. Próximo intento en ${delay}ms. Motivo: ${error.message || error}`);
                 },
             });
             console.log("📤 Solicitud publicada en MQTT:", payload);
