@@ -53,7 +53,7 @@ END$$;
 CREATE TABLE IF NOT EXISTS purchase_requests (
   id              SERIAL PRIMARY KEY,
   request_id      UUID NOT NULL UNIQUE,
-  buy_order       VARCHAR(26) NOT NULL UNIQUE,
+  buy_order       VARCHAR(26) NULL UNIQUE,
   user_id         INTEGER NULL,
   property_url    TEXT   NOT NULL,
   amount_clp      INTEGER NULL,

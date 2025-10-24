@@ -52,6 +52,19 @@ services:
     build: ./src/web_server
     restart: unless-stopped
     env_file: [.env]
+    environment:
+      # Frontend SPA
+      PUBLIC_FRONTEND_URL: https://propertiesmarket.tech
+
+      # URL ABSOLUTA a la que Webpay hará POST con token_ws
+      WEBPAY_RETURN_URL: https://5lgt962kci.execute-api.us-east-2.amazonaws.com/payments/webpay/return
+
+
+      # (si usas el SDK oficial)
+      WEBPAY_COMMERCE_CODE: "597055555532"   # ejemplo ambiente test
+      WEBPAY_API_KEY: "X-TBK-API-KEY-TEST"   # ejemplo ambiente test
+      WEBPAY_ENV: "TEST"
+
     ports:
       - "3000:3000"
     depends_on:
@@ -84,7 +97,7 @@ services:
 
   # Job Master (API interna RNF01)
   job_master:
-    build: ./src/job-_master
+    build: ./src/job_master
     restart: unless-stopped
     env_file: [.env]
     environment:

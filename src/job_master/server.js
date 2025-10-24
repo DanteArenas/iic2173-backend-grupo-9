@@ -10,7 +10,7 @@ const app = new Koa();
 const router = new Router();
 
 const PORT = process.env.PORT || 8080;
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+const REDIS_URL = process.env.REDIS_URL;
 const JOB_MASTER_TOKEN = process.env.JOB_MASTER_TOKEN || '';
 
 const redis = new IORedis(REDIS_URL, { maxRetriesPerRequest: null });
