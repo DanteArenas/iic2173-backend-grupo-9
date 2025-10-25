@@ -12,8 +12,13 @@ CREATE TABLE IF NOT EXISTS properties (
     data JSONB NOT NULL,
     visits INT DEFAULT 1,
     reservation_cost INT,
-    updated_at TEXT
+    updated_at TEXT,
+    -- contador de reservas activas (stock reservado)
+    reserved_count INTEGER NOT NULL DEFAULT 0
 );
+
+-- índice para reserved_count si no existe (por si el contenedor reinicia)
+CREATE INDEX IF NOT EXISTS idx_properties_reserved_count ON properties (reserved_count);
 
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -34,7 +39,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_auth0_id_unique_idx ON users (auth0_user
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'purchase_status') THEN
-    CREATE TYPE purchase_status AS ENUM ('OK','ACCEPTED','REJECTED','ERROR', 'PENDING');
+    CREATE TYPE purchase_status AS ENUM ('OK','ACCEPTED','REJECTED','ERROR','PENDING');
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'event_type') THEN
@@ -52,21 +57,27 @@ END$$;
 -- Tabla purchase_requests
 CREATE TABLE IF NOT EXISTS purchase_requests (
   id              SERIAL PRIMARY KEY,
-  request_id      UUID NOT NULL UNIQUE,
-  buy_order       VARCHAR(26) NULL UNIQUE,
-  user_id         INTEGER NULL,
-  property_url    TEXT   NOT NULL,
-  amount_clp      INTEGER NULL,
+  request_id      UUID NOT NULL UNIQUE,             -- nuestro ID interno
+  buy_order       VARCHAR(26) NULL UNIQUE,          -- orden Webpay (G9-...)
+  user_id         INTEGER NULL,                     -- usuario dueño
+  property_url    TEXT   NOT NULL,                  -- propiedad reservada
+  amount_clp      INTEGER NULL,                     -- monto cobrado en CLP
   status          purchase_status NOT NULL DEFAULT 'OK',
-  reason          TEXT NULL,
-  deposit_token   TEXT NULL,
+  reason          TEXT NULL,                        -- descripción humana del estado
+  deposit_token   TEXT NULL,                        -- token_ws de Webpay
+  retry_used      BOOLEAN NOT NULL DEFAULT FALSE,   -- ya usó retry?
+  invoice_url     TEXT NULL,                        -- <-- URL pública del PDF de boleta
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Índices útiles
-CREATE INDEX IF NOT EXISTS idx_purchase_requests_url    ON purchase_requests (property_url);
-CREATE INDEX IF NOT EXISTS idx_purchase_requests_status ON purchase_requests (status);
+CREATE INDEX IF NOT EXISTS idx_purchase_requests_url
+    ON purchase_requests (property_url);
+CREATE INDEX IF NOT EXISTS idx_purchase_requests_status
+    ON purchase_requests (status);
+CREATE INDEX IF NOT EXISTS idx_purchase_requests_retry_used
+    ON purchase_requests (retry_used);
 
 -- Tabla event_logs
 CREATE TABLE IF NOT EXISTS event_logs (
@@ -78,31 +89,44 @@ CREATE TABLE IF NOT EXISTS event_logs (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_event_logs_type              ON event_logs (type);
-CREATE INDEX IF NOT EXISTS idx_event_logs_related_request   ON event_logs (related_request_id);
-CREATE INDEX IF NOT EXISTS idx_event_logs_created_at_desc   ON event_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_event_logs_type
+    ON event_logs (type);
+CREATE INDEX IF NOT EXISTS idx_event_logs_related_request
+    ON event_logs (related_request_id);
+CREATE INDEX IF NOT EXISTS idx_event_logs_created_at_desc
+    ON event_logs (created_at DESC);
 
--- Campo reserved_count en properties
+-- Asegurar columnas que agregamos evolutivamente si el contenedor reinicia contra una BD vieja
 DO $$
 BEGIN
+  -- reserved_count en properties
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_name='properties' AND column_name='reserved_count'
   ) THEN
-    ALTER TABLE properties ADD COLUMN reserved_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE properties
+      ADD COLUMN reserved_count INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX IF NOT EXISTS idx_properties_reserved_count ON properties (reserved_count);
   END IF;
-END$$;
 
--- Campo retry_used en purchase_requests (permitir solo un reintento por solicitud)
-DO $$
-BEGIN
+  -- retry_used en purchase_requests
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_name='purchase_requests' AND column_name='retry_used'
   ) THEN
-    ALTER TABLE purchase_requests ADD COLUMN retry_used BOOLEAN NOT NULL DEFAULT FALSE;
-    CREATE INDEX IF NOT EXISTS idx_purchase_requests_retry_used ON purchase_requests (retry_used);
+    ALTER TABLE purchase_requests
+      ADD COLUMN retry_used BOOLEAN NOT NULL DEFAULT FALSE;
+    CREATE INDEX IF NOT EXISTS idx_purchase_requests_retry_used
+      ON purchase_requests (retry_used);
+  END IF;
+
+  -- invoice_url en purchase_requests  <-- NUEVO
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='purchase_requests' AND column_name='invoice_url'
+  ) THEN
+    ALTER TABLE purchase_requests
+      ADD COLUMN invoice_url TEXT NULL;
   END IF;
 END$$;
 
