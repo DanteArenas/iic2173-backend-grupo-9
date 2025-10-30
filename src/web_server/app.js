@@ -1,5 +1,3 @@
-// src/web_server/app.js
-
 // Envía métricas solo si New Relic está configurado (evita crash en local)
 try { require('newrelic'); } catch (e) { console.warn('New Relic not started:', e.message); }
 
@@ -40,9 +38,9 @@ const republishPurchaseRequest = require('./listener/republishPurchaseRequest');
 const { createTransaction, commitTransaction, mapWebpayStatus } = require('./services/webpayService');
 const { getUfValue } = require('./services/ufService');
 
-// 🔥 Servicio de boleta vía Lambda
-// Debes tener ./services/invoiceService.js con generateAndUploadInvoice(...)
-const { generateAndUploadInvoice } = require('./services/invoiceService');
+const { runRecommendationJob } = require('./services/recommendations');
+// =================================================================
+const { generarBoletaDesdeApiGateway } = require('./services/boletaService');
 
 // Otros helpers
 const { v4: uuidv4, validate: uuidValidate } = require('uuid');
@@ -427,100 +425,89 @@ router.get('/workers/heartbeat', async (ctx) => {
   }
 });
 
-// -------- PROTECTED
+/* ================================================================= */
+/* ============= RECOMENDACIONES (Usando Servicio Real) ============ */
+/* ================================================================= */
+
+// Jobs en memoria (mínimo viable)
+// job_id -> { status: 'QUEUED'|'RUNNING'|'DONE'|'ERROR', result?, error? }
+const recJobs = new Map();
+
+// =================================================================
+// ❌ ELIMINADAS LAS FUNCIONES ANTIGUAS Y CON BUG:
+// - fetchCatalogFromDb
+// - scoreProperties
+// - computeRealRecommendations
+// =================================================================
+
+// POST /recommendations/queue → encola y calcula en background (in-memory)
+// ✅ ACTUALIZADO para usar runRecommendationJob (el servicio avanzado)
 router.post('/recommendations/queue', requireAuth, async (ctx) => {
   try {
-    const user = await getOrCreateUserFromToken(ctx.state.user || {});
+    // opcional: garantizar existencia del usuario
+    await getOrCreateUserFromToken(ctx.state.user || {});
+    
     const { top_n = 8, filter = {} } = ctx.request.body || {};
+    const job_id = uuidv4();
 
-    console.log(`Queuing recommendation job for user ${user.id}`);
-    const resp = await _fetch(`${JOB_MASTER_URL}/jobs`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${JOB_MASTER_TOKEN}`,
-      },
-      body: JSON.stringify({
-        user_id: user.id,
-        top_n,
-        filter,
-        job_type: 'recommendation',
-      }),
-    });
+     // --- PREPARAR CONTEXTO PARA EL JOB ---
+     // El token JWT del usuario (sin 'Bearer ')
+     const token = ctx.request.headers.authorization?.split(' ')[1] || '';
+     if (!token) {
+       ctx.status = 401;
+       ctx.body = { error: 'Could not extract user token for recommendation job' };
+       return;
+     }
 
-    if (!resp.ok) {
-      const text = await resp.text();
-      console.error(`Job master failed (${resp.status}): ${text}`);
-      ctx.status = resp.status;
-      ctx.body = { error: 'Job master failed', details: text };
-      return;
-    }
+     // La URL base de ESTA MISMA API, que el worker llamará
+     const apiBaseUrl = (
+      process.env.PUBLIC_API_BASE_URL || 
+       process.env.API_BASE_URL || 
+       `http://localhost:${process.env.APP_PORT || 3000}`
+    ).replace(/\/$/, ''); // Asegura que no tenga / al final
 
-    const json = await resp.json();
+    recJobs.set(job_id, { status: 'QUEUED' });
+
+    (async () => {
+      recJobs.set(job_id, { status: 'RUNNING' });
+      try {
+        // --- ESTA ES LA LLAMADA CORRECTA ---
+        // Llama al servicio avanzado importado
+        const result = await runRecommendationJob(
+          { top_n, filter },      // params
+          { apiBaseUrl, token }   // context
+        );
+        recJobs.set(job_id, { status: 'DONE', result });
+      } catch (e) {
+        console.error(`[RECS JOB ${job_id}] FAILED:`, e); // Loguear el error real
+        recJobs.set(job_id, { status: 'ERROR', error: e?.message || 'Worker error' });
+      }
+    })();
+
     ctx.status = 202;
-    ctx.body = json;
+    ctx.body = { job_id };
   } catch (err) {
-    console.error('Internal error queuing recommendation job:', err);
+    console.error('queue error:', err);
     ctx.status = 500;
-    ctx.body = {
-      error: 'Internal error queuing job',
-      details: err.message,
-    };
+    ctx.body = { error: 'Queue error', details: err?.message };
   }
 });
 
+// GET /recommendations/status/:job_id  → devuelve { job: { status, result?, error? } }
 router.get('/recommendations/status/:job_id', requireAuth, async (ctx) => {
   const { job_id } = ctx.params;
-  try {
-    const user = await getOrCreateUserFromToken(ctx.state.user || {});
-    console.log(
-      `Checking job status for ${job_id} (user ${user.id})`
-    );
-    const resp = await _fetch(
-      `${JOB_MASTER_URL}/jobs/${encodeURIComponent(job_id)}`,
-      {
-        headers: { Authorization: `Bearer ${JOB_MASTER_TOKEN}` },
-      }
-    );
-
-    if (resp.status === 404) {
-      ctx.status = 404;
-      ctx.body = { error: 'Job not found' };
-      return;
-    }
-    if (!resp.ok) {
-      const text = await resp.text();
-      console.error(
-        `Job master failed checking status (${resp.status}): ${text}`
-      );
-      ctx.status = resp.status;
-      ctx.body = { error: 'Job master failed', details: text };
-      return;
-    }
-
-    const data = await resp.json();
-    if (data?.job?.user_id && data.job.user_id !== user.id) {
-      console.warn(
-        `Forbidden: User ${user.id} tried to access job ${job_id} owned by ${data.job.user_id}`
-      );
-      ctx.status = 403;
-      ctx.body = { error: 'Forbidden: You do not own this job' };
-      return;
-    }
-    ctx.body = data;
-  } catch (err) {
-    console.error(
-      `Internal error checking job status for ${job_id}:`,
-      err
-    );
-    ctx.status = 500;
-    ctx.body = {
-      error: 'Internal error checking job status',
-      details: err.message,
-    };
+  const job = recJobs.get(job_id);
+  if (!job) {
+    ctx.status = 404;
+    ctx.body = { error: 'Job not found' };
+    return;
   }
+  ctx.body = { job };
 });
 
+/* =================== FIN RECOMMENDATIONS =================== */
+
+// -------- PROTECTED (resto)
 router.get('/me', requireAuth, async (ctx) => {
   try {
     const user = await getOrCreateUserFromToken(ctx.state.user || {});
@@ -1203,39 +1190,28 @@ async function publishValidationSafe(reqRow) {
   }
 }
 
-// genera boleta vía Lambda si la compra está ACCEPTED y aún no tiene invoice_url
 async function ensureInvoiceForRequestRow(requestRow) {
   try {
     if (!requestRow) return;
-    const finalStatus = String(requestRow.status || '').toUpperCase();
-    if (finalStatus !== 'ACCEPTED') return; // solo boleta en éxito
+    if (String(requestRow.status || '').toUpperCase() !== 'ACCEPTED') return;
 
-    // si ya tenemos invoice_url, no hacemos nada
-    if (requestRow.invoice_url) return;
+    // Si ya hay URL, intenta HEAD; si expiró, regeneras
+    if (requestRow.invoice_url) {
+      try {
+        const head = await (global.fetch || require('undici').fetch)(requestRow.invoice_url, { method: 'HEAD' });
+        if (head.ok) return;
+      } catch { /* expirada → sigue */ }
+    }
 
     const buyer = await User.findByPk(requestRow.user_id);
     const property = await Property.findOne({
-      where: sequelize.where(
-        sequelize.json('data.url'),
-        requestRow.property_url
-      ),
+      where: sequelize.where(sequelize.json('data.url'), requestRow.property_url),
     });
 
-    try {
-      const invoiceUrl = await generateAndUploadInvoice({
-        requestRow,
-        user: buyer,
-        property,
-      });
-
-      if (invoiceUrl) {
-        await requestRow.update({ invoice_url: invoiceUrl });
-      }
-    } catch (e) {
-      console.error('ensureInvoiceForRequestRow: failed to generate invoice via Lambda:', e.message);
-    }
-  } catch (invErr) {
-    console.error('ensureInvoiceForRequestRow: unexpected error:', invErr);
+    const { url } = await generarBoletaDesdeApiGateway({ requestRow, user: buyer, property });
+    if (url) await requestRow.update({ invoice_url: url });
+  } catch (e) {
+    console.error('ensureInvoiceForRequestRow (serverless):', e.message);
   }
 }
 
@@ -1466,6 +1442,7 @@ router.get('/payments/webpay/return', async (ctx) => {
           await reqRow.update(
             {
               status: 'REJECTED',
+              // CORRECTION: _reason -> reason
               reason: 'User cancelled payment at Webpay',
               updated_at: new Date(),
             },
@@ -1496,8 +1473,7 @@ router.get('/payments/webpay/return', async (ctx) => {
           return;
         }
 
-        await t.commit();
-
+        // ... rest of the block ...
         if (reqRow) {
           // puede ya estar ACCEPTED o REJECTED
           await publishValidationSafe(reqRow);
@@ -1600,6 +1576,190 @@ router.get('/reservations/:request_id/invoice', requireAuth, async (ctx) => {
   ctx.redirect(reqRow.invoice_url);
 });
 
+// === NUEVO: helper interno para normalizar moneda a CLP ===
+async function toClpAmount(price, currency, tsIso) {
+  const c = (currency || '').toString().trim().toUpperCase();
+  if (!Number.isFinite(Number(price))) return null;
+  const p = Number(price);
+
+  if (c === 'CLP' || c === '$' || c === '') return Math.round(p);
+
+  if (c === 'UF') {
+    try {
+      const v = await getUfValue(tsIso || new Date().toISOString());
+      if (!Number.isFinite(v) || v <= 0) return null;
+      return Math.round(p * v);
+    } catch {
+      return null;
+    }
+  }
+
+  // Moneda desconocida → no convertible
+  return null;
+}
+
+// === NUEVO: expone UF para el worker ===
+// GET /utils/uf?date=ISO_8601
+router.get('/utils/uf', requireAuth, async (ctx) => {
+  try {
+    const date = (ctx.query?.date && String(ctx.query.date)) || new Date().toISOString();
+    const val = await getUfValue(date);
+    if (!Number.isFinite(val) || val <= 0) {
+      ctx.status = 502;
+      ctx.body = { error: 'UF unavailable' };
+      return;
+    }
+    ctx.body = { uf: val, date };
+  } catch (e) {
+    ctx.status = 500;
+    ctx.body = { error: 'UF error', message: e.message };
+  }
+});
+
+// ✅ Reemplaza/añade en tu Koa (web_server) — por ejemplo en app.js donde defines rutas protegidas
+router.get('/users/preferences', requireAuth, async (ctx) => {
+  try {
+    const user = await getOrCreateUserFromToken(ctx.state.user || {});
+
+    // 1) Traer RESERVAS del usuario (últimos 18 meses para tener suficiente muestra)
+    const since = new Date();
+    since.setMonth(since.getMonth() - 18);
+
+    const requests = await Request.findAll({
+      where: {
+        user_id: user.id,
+        created_at: { [Op.gte]: since },
+        status: { [Op.in]: ['ACCEPTED', 'PENDING'] } // usa solo ACCEPTED si prefieres ultra-estricto
+      },
+      order: [['created_at', 'DESC']]
+    });
+
+    // Si no hay historial, devolvemos mínimos datos y sin top_locations
+    if (!requests.length) {
+      ctx.body = {
+        price_clp_p25: null,
+        price_clp_median: null,
+        price_clp_p75: null,
+        top_locations: [] // <- clave: SIN fallback del catálogo
+      };
+      return;
+    }
+
+    // 2) Mapear property_url -> Property (para sacar location / price / currency / timestamp)
+    const urls = Array.from(new Set(requests.map(r => r.property_url).filter(Boolean)));
+    const properties = await Property.findAll({
+      where: sequelize.where(sequelize.json('data.url'), { [Op.in]: urls })
+    });
+    const byUrl = new Map();
+    for (const p of properties) {
+      const url = p?.data?.url;
+      if (url) byUrl.set(url, p);
+    }
+
+    // 3) Recolectar CLP (convirtiendo UF cuando haga falta) y tokens de ubicación
+    //    Para la conversión UF usamos tu servicio /utils/uf vía computeReservationCost o directamente getUfValue si prefieres.
+    async function ufAt(tsIso) {
+      try {
+        const r = await _fetch(`${process.env.PUBLIC_API_BASE_URL || process.env.API_BASE_URL || `http://localhost:${process.env.APP_PORT || 3000}`}/utils/uf?date=${encodeURIComponent(tsIso || new Date().toISOString())}`, {
+          headers: { Authorization: `Bearer ${ctx.request.headers.authorization?.split(' ')[1] || ''}` }
+        });
+        if (!r.ok) return null;
+        const j = await r.json();
+        const v = Number(j?.uf);
+        return Number.isFinite(v) && v > 0 ? v : null;
+      } catch { return null; }
+    }
+
+    async function priceToClp(p) {
+      const d = p?.data || {};
+      const price = Number(d?.price);
+      if (!Number.isFinite(price) || price <= 0) return null;
+      const ccy = (d?.currency || '').toString().toUpperCase();
+      if (!ccy || ccy === 'CLP' || ccy === '$') return Math.round(price);
+      if (ccy === 'UF') {
+        const v = await ufAt(d?.timestamp);
+        return (v && v > 0) ? Math.round(price * v) : null;
+      }
+      return null;
+    }
+
+    const STATIC_STOPWORDS = new Set([
+      'calle','cll','av','avenida','pje','pasaje','blk','block','edif','edificio','dpto','depto',
+      'casa','condominio','condo','sector','centro','norte','sur','oriente','poniente',
+      'barrio','comuna','region','región','chile',
+      'la','el','los','las','y','e','de','del','al','en','con','sin','por','para','a',
+      's/n','sn','nº','num','numero','n°'
+    ]);
+    const normText = (s) => (s || '').toString().toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}\s,.-]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const filteredTokens = (s) => {
+      const arr = normText(s).split(/[,\s/|-]+/).filter(Boolean);
+      const out = [];
+      for (const t of arr) {
+        if (t.length <= 1) continue;
+        if (STATIC_STOPWORDS.has(t)) continue;
+        out.push(t);
+      }
+      return out;
+    };
+
+    const clps = [];
+    const tokenCounter = new Map(); // token -> count
+
+    for (const r of requests) {
+      const p = byUrl.get(r.property_url);
+      if (!p) continue;
+      const d = p.data || {};
+
+      // precio CLP
+      const clp = await priceToClp(p);
+      if (Number.isFinite(clp) && clp > 0) clps.push(clp);
+
+      // tokens ubicación
+      const loc = (d.location || '').toString();
+      for (const t of filteredTokens(loc)) {
+        tokenCounter.set(t, (tokenCounter.get(t) || 0) + 1);
+      }
+    }
+
+    // 4) Cuantiles de precio
+    clps.sort((a,b)=>a-b);
+    const quantile = (arr, q) => {
+      if (!arr.length) return null;
+      const pos = (arr.length - 1) * q;
+      const lo = Math.floor(pos), hi = Math.ceil(pos);
+      if (lo === hi) return arr[lo];
+      const h = pos - lo;
+      return Math.round(arr[lo] * (1 - h) + arr[hi] * h);
+    };
+
+    const price_clp_p25    = quantile(clps, 0.25);
+    const price_clp_median = quantile(clps, 0.50);
+    const price_clp_p75    = quantile(clps, 0.75);
+
+    // 5) Top locaciones del USUARIO (tokens más frecuentes en su historial)
+    const top_locations = Array.from(tokenCounter.entries())
+      .sort((a,b)=>b[1]-a[1])
+      .slice(0, 8)
+      .map(([key, count]) => ({ key, count }));
+
+    ctx.body = {
+      price_clp_p25,
+      price_clp_median,
+      price_clp_p75,
+      top_locations
+    };
+  } catch (err) {
+    console.error('GET /users/preferences error:', err);
+    ctx.status = 500;
+    ctx.body = { error: 'Failed to compute user preferences' };
+  }
+});
+
+
 // --- LOG ANTES DEL ROUTER
 app.use(async (ctx, next) => {
   console.log(`--> ${ctx.method} ${ctx.path} (Antes de usar el Router)`);
@@ -1638,3 +1798,7 @@ process.on('SIGINT', () => {
   console.log('SIGINT signal received: closing HTTP server');
   process.exit(0);
 });
+
+
+
+

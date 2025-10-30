@@ -61,6 +61,7 @@ services:
     env_file: [.env]
     environment:
       # --- MAPEANDO LA CLAVE DE NEW RELIC ---
+       
       NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY_WEB_SERVER}
       NEW_RELIC_APP_NAME: "grupo9-web_server" # Nombre único para este servicio
 
