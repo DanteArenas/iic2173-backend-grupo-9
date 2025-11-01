@@ -761,9 +761,6 @@ router.post('/properties/buy', requireAuth, async (ctx) => {
 
   let user;
   let reservation_cost;
-  let property;
-  let requestId = uuidv4();
-  let buyOrder = `G9-${requestId.substring(0, 23)}`;
 
   const transaction = await sequelize.transaction();
 
@@ -877,14 +874,6 @@ router.post('/properties/buy', requireAuth, async (ctx) => {
         const buyOrder = requestId.replace(/-/g, "").substring(0, 26);
         const returnUrl = process.env.API_LOCAL || 'http://';
         
-    
-        const tx = await createTransaction(
-            buyOrder,
-            String(user.id),
-            reservation_cost,
-            `${returnUrl}/webpay/commit`
-        );
-
     const tx = await createTransaction(
       buyOrder,
       `user-${user.id}`,
