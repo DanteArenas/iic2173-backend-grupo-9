@@ -410,6 +410,7 @@ router.post('/properties/buy', requireAuth, async ctx => {
         return;
     }
 
+    let reservation_cost;
     try {
         console.log('🔄 Processing buy request:', { url });
 
@@ -433,7 +434,7 @@ router.post('/properties/buy', requireAuth, async ctx => {
             ctx.body = { error: "Property not found" };
             return;
         }
-        const reservation_cost = await computeReservationCost(property.data);
+        reservation_cost = await computeReservationCost(property.data);
         const requestId = uuidv4();
         const buyOrder = requestId.replace(/-/g, "").substring(0, 26);
         const returnUrl = process.env.API_LOCAL || 'http://';
@@ -442,7 +443,7 @@ router.post('/properties/buy', requireAuth, async ctx => {
         const tx = await createTransaction(
             buyOrder,
             String(user.id),
-            reservation_cost ,
+            reservation_cost,
             `${returnUrl}/webpay/commit`
         );
 
