@@ -843,14 +843,7 @@ router.post('/properties/buy', requireAuth, async (ctx) => {
       ` -> Reservation Cost: ${reservation_cost} CLP`
     );
 
-    if (!WEBPAY_RETURN_URL) {
-      console.error(
-        '❌ FATAL: WEBPAY_RETURN_URL is not set!'
-      );
-      throw new Error(
-        'Server configuration error: Webpay return URL missing.'
-      );
-    }
+    let reservation_cost;
     try {
       new URL(WEBPAY_RETURN_URL);
     } catch {
@@ -859,12 +852,38 @@ router.post('/properties/buy', requireAuth, async (ctx) => {
       );
     }
 
-    console.log(
-      `[DEBUG] Usando WEBPAY_RETURN_URL: ${WEBPAY_RETURN_URL}`
-    );
-    console.log(
-      `⏳ [${requestId}] Creating Webpay transaction buyOrder=${buyOrder}, amount=${reservation_cost}, returnUrl=${WEBPAY_RETURN_URL}`
-    );
+        let user;
+        try {
+            user = await getOrCreateUserFromToken(ctx.state.user || {});
+        } catch (err) {
+            ctx.status = 400;
+            ctx.body = { error: 'Invalid token payload', message: err.message };
+            return;
+        }
+        // 1. Buscar propiedad en DB
+        const property = await Property.findOne({
+            where: sequelize.where(
+                sequelize.json('data.url'),
+                url
+            ),
+        });
+        if (!property) {
+            ctx.status = 404;
+            ctx.body = { error: "Property not found" };
+            return;
+        }
+        reservation_cost = await computeReservationCost(property.data);
+        const requestId = uuidv4();
+        const buyOrder = requestId.replace(/-/g, "").substring(0, 26);
+        const returnUrl = process.env.API_LOCAL || 'http://';
+        
+    
+        const tx = await createTransaction(
+            buyOrder,
+            String(user.id),
+            reservation_cost,
+            `${returnUrl}/webpay/commit`
+        );
 
     const tx = await createTransaction(
       buyOrder,

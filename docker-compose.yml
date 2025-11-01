@@ -32,7 +32,7 @@ services:
 
   # Listener MQTT (tu servicio existente)
   listener:
-    build: ./src/listener
+    image: 875904049423.dkr.ecr.us-east-2.amazonaws.com/iic2173-backend-grupo-9-listener:latest
     container_name: mqtt-listener
     restart: unless-stopped
     env_file: [.env]
@@ -56,7 +56,7 @@ services:
 
   # Web Server (tu API principal)
   web_server:
-    build: ./src/web_server
+    image: 875904049423.dkr.ecr.us-east-2.amazonaws.com/iic2173-backend-grupo-9-web_server:latest
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -83,7 +83,7 @@ services:
       - /app/node_modules
 
   web_server_2:
-    build: ./src/web_server
+    image: 875904049423.dkr.ecr.us-east-2.amazonaws.com/iic2173-backend-grupo-9-web_server_2:latest
     restart: unless-stopped
     env_file: [.env]
     # --- MAPEANDO LA CLAVE DE NEW RELIC ---
