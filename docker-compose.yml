@@ -23,7 +23,7 @@ services:
 
   # MQTT Listener Service
   listener:
-    build: ./src/listener
+    image: 875904049423.dkr.ecr.us-east-2.amazonaws.com/iic2173-backend-grupo-9-listener:latest
     container_name: mqtt-listener
     restart: unless-stopped
     environment:
@@ -45,7 +45,7 @@ services:
 
   # Web Server Service
   web_server:
-    build: ./src/web_server
+    image: 875904049423.dkr.ecr.us-east-2.amazonaws.com/iic2173-backend-grupo-9-web_server:latest
     restart: unless-stopped
     environment:
       - NODE_ENV=development
@@ -66,7 +66,7 @@ services:
       - /app/node_modules
 
   web_server_2:
-    build: ./src/web_server
+    image: 875904049423.dkr.ecr.us-east-2.amazonaws.com/iic2173-backend-grupo-9-web_server_2:latest
     restart: unless-stopped
     environment:
       - NODE_ENV=development
