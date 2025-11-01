@@ -1,0 +1,14 @@
+{
+  "name": "rec-worker",
+  "version": "1.0.0",
+  "main": "worker.js",
+  "type": "module",
+  "scripts": {
+    "start": "node worker.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ioredis": "^5.3.2",
+    "pg": "^8.12.0"
+  }
+}

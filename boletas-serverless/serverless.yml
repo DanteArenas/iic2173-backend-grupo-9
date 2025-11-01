@@ -1,0 +1,76 @@
+service: boletas
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  memorySize: 512
+  timeout: 30
+  httpApi:
+    cors: true
+
+  environment:
+    # centraliza el prefijo para evitar inconsistencias
+    INVOICE_PREFIX: invoices
+    BUCKET_NAME: ${self:custom.bucketName}
+    PUBLIC_BASE_URL: https://${self:custom.bucketName}.s3.${self:provider.region}.amazonaws.com/${self:provider.environment.INVOICE_PREFIX}
+    BRAND_NAME: PropertiesMarket
+    BRAND_COLOR: "#0a7f53"
+    BRAND_SUBTITLE: "Boleta de Reserva"
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+          Resource:
+            # ⬅️ antes decía /boletas/*; ahora /invoices/* (o usa la var)
+            - arn:aws:s3:::${self:custom.bucketName}/${self:provider.environment.INVOICE_PREFIX}/*
+        - Effect: Allow
+          Action:
+            - s3:ListBucket
+          Resource:
+            - arn:aws:s3:::${self:custom.bucketName}
+
+custom:
+  stage: ${opt:stage, 'dev'}
+  bucketName: ${self:service}-boletas-${self:custom.stage}-${aws:accountId}-${self:provider.region}
+
+functions:
+  generarBoleta:
+    handler: src/handler.handler
+    events:
+      - httpApi:
+          method: POST
+          path: /boleta
+
+resources:
+  Resources:
+    BoletasBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.bucketName}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ["*"]
+              AllowedMethods: ["GET","PUT","HEAD"]   # ⬅️ añade HEAD (haces HEAD desde el backend)
+              AllowedOrigins: ["*"]
+              MaxAge: 3600
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        LifecycleConfiguration:
+          Rules:
+            - Id: ExpireBoletas
+              Prefix: invoices/                      # ⬅️ antes decía boletas/
+              Status: Enabled
+              ExpirationInDays: 30

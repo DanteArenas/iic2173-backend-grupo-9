@@ -1,19 +1,21 @@
-
 services:
-  # PostgreSQL Database
+  # PostgreSQL
   postgres:
     image: postgres:15-alpine
     container_name: properties-db
     restart: unless-stopped
-    env_file:
-      - .env
+    env_file: [.env]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./sql:/sql
     ports:
       - "${POSTGRES_PORT}:5432"
-    networks:
-      - app-network
+    networks: [app-network]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -21,45 +23,60 @@ services:
       retries: 5
       start_period: 30s
 
-  # MQTT Listener Service
+  # Redis (cola)
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+    - app-network
+
+  # Listener MQTT (tu servicio existente)
   listener:
     image: public.ecr.aws/c6r9t1i8/properties-market-listener:latest
     container_name: mqtt-listener
     restart: unless-stopped
+    env_file: [.env]
+    # --- MAPEANDO LA CLAVE DE NEW RELIC ---
     environment:
-      - NODE_ENV=development
-      - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY_LISTENER}
-      - NEW_RELIC_APP_NAME=listener
-    env_file:
-      - .env
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY_LISTENER}
+      NEW_RELIC_APP_NAME: "grupo9-listener" # Nombre único para este servicio
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - app-network
+    networks: [app-network]
+    # --- ARREGLO DE DNS ---
+    dns:
+      - "172.31.176.1"
+      - "8.8.8.8"
     volumes:
       - ./src/listener/MQTT_suscriber.js:/app/MQTT_suscriber.js
       - ./src/listener/mqttClient.js:/app/mqttClient.js
       - ./src/listener/sendPurchaseRequest.js:/app/sendPurchaseRequest.js
       - ./src/web_server:/web_server
 
-  # Web Server Service
+  # Web Server (tu API principal)
   web_server:
     image: public.ecr.aws/c6r9t1i8/properties-market-web:latest
     restart: unless-stopped
+    env_file: [.env]
     environment:
-      - NODE_ENV=development
-      - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY_WEB_SERVER}
-      - NEW_RELIC_APP_NAME=web server
-    env_file:
-      - .env
+      # --- MAPEANDO LA CLAVE DE NEW RELIC ---
+       
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY_WEB_SERVER}
+      NEW_RELIC_APP_NAME: "grupo9-web_server" # Nombre único para este servicio
+
     ports:
       - "3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - app-network
+      job_master:
+        condition: service_started
+    networks: [app-network]
+    # --- ARREGLO DE DNS ---
+    dns:
+      - "172.31.176.1"
+      - "8.8.8.8"
     volumes:
       - ./src/web_server:/app
       - ./src/listener:/app/listener
@@ -68,23 +85,65 @@ services:
   web_server_2:
     image: public.ecr.aws/c6r9t1i8/properties-market-web:latest
     restart: unless-stopped
+    env_file: [.env]
+    # --- MAPEANDO LA CLAVE DE NEW RELIC ---
     environment:
-      - NODE_ENV=development
-      - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY_WEB_SERVER_2}
-      - NEW_RELIC_APP_NAME=web_server_2
-    env_file:
-      - .env
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY_WEB_SERVER_2}
+      NEW_RELIC_APP_NAME: "grupo9-web_server_2" # Nombre único para este servicio
     ports:
       - "3001:3000"
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - app-network
+      job_master:
+        condition: service_started
+    networks: [app-network]
+    # --- ARREGLO DE DNS ---
+    dns:
+      - "172.31.176.1"
+      - "8.8.8.8"
     volumes:
       - ./src/web_server:/app
       - ./src/listener:/app/listener
       - /app/node_modules
+
+  # Job Master (API interna RNF01)
+  job_master:
+    build: ./src/job_master
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DOTENV_PATH: /app/../../.env
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks: [app-network]
+    # --- ARREGLO DE DNS ---
+    dns:
+      - "172.31.176.1"
+      - "8.8.8.8"
+
+  # Worker de recomendaciones
+  rec-worker:
+    build: ./src/rec-worker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DOTENV_PATH: /app/../../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks: [app-network]
+    # --- ARREGLO DE DNS ---
+    dns:
+      - "172.31.176.1"
+      - "8.8.8.8"
 
 volumes:
   postgres_data:
@@ -92,3 +151,4 @@ volumes:
 networks:
   app-network:
     driver: bridge
+
