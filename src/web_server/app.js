@@ -21,9 +21,10 @@ const cors = require('@koa/cors');
 const sequelize = require('./database');
 const Property = require('./models/Property');
 const User = require('./models/User');
-const Request = require('./models/Request'); 
-const { createTransaction, commitTransaction, mapWebpayStatus} = require("./services/webpayService")
+const Request = require('./models/Request');
+const { createTransaction, commitTransaction, mapWebpayStatus } = require("./services/webpayService")
 const { getUfValue } = require('./services/ufService');
+const { sendPaymentNotification } = require('./services/emailService');
 const { v4: uuidv4 } = require('uuid');
 
 const { Op } = require('sequelize');
@@ -404,7 +405,7 @@ router.get('/properties/:id', requireAuth, async ctx => {
 router.post('/properties/buy', requireAuth, async ctx => {
     const { url } = ctx.request.body;
 
-    if (!url ) {
+    if (!url) {
         ctx.status = 400;
         ctx.body = { error: "URL es requerido" };
         return;
@@ -437,12 +438,10 @@ router.post('/properties/buy', requireAuth, async ctx => {
         const requestId = uuidv4();
         const buyOrder = requestId.replace(/-/g, "").substring(0, 26);
         const returnUrl = process.env.API_LOCAL || 'http://';
-        
-    
         const tx = await createTransaction(
             buyOrder,
             String(user.id),
-            reservation_cost ,
+            reservation_cost,
             `${returnUrl}/webpay/commit`
         );
 
@@ -576,99 +575,130 @@ router.post('/reservations/:request_id/retry', requireAuth, async ctx => {
 });
 //post para actualizar info de webpay
 router.post('/webpay/commit', async ctx => {
-  try {
-    const { token_ws } = ctx.request.body;
-    if (!token_ws) {
-      ctx.status = 400;
-      ctx.body = { error: "token_ws es requerido" };
-      return;
-    }
-
-    // 1. Confirmar transacción con WebPay
-    const result = await commitTransaction(token_ws);
-    console.log("💳 Resultado commit:", result);
-    
-    const mappedStatus = mapWebpayStatus(result);
-    
-    // 2. Actualizar en DB
-    await Request.update(
-      { status: mappedStatus },
-      { where: { deposit_token: token_ws } }
-    );
-    // 🔄 Si falla o se rechaza, devolver la visita
-    if (["REJECTED", "ERROR"].includes(mappedStatus)) {
-        const property = await Property.findOne({
-            where: sequelize.where(
-            sequelize.json('data.url'),
-            request.property_url
-        ),
-        });
-        if (property) {
-            await property.update({ visits: property.visits + 1 });
-            console.log(`🔼 Visita devuelta a propiedad: ${request.property_url}`);
+    try {
+        const { token_ws } = ctx.request.body;
+        if (!token_ws) {
+            ctx.status = 400;
+            ctx.body = { error: "token_ws es requerido" };
+            return;
         }
+
+        // 1. Confirmar transacción con WebPay
+        const result = await commitTransaction(token_ws);
+        console.log("💳 Resultado commit:", result);
+
+        const mappedStatus = mapWebpayStatus(result);
+
+        // 2. Actualizar en DB
+        await Request.update(
+            { status: mappedStatus },
+            { where: { deposit_token: token_ws } }
+        );
+
+        // Cargar la solicitud asociada para reutilizar en ajustes y correo
+        let request = await Request.findOne({ where: { deposit_token: token_ws } });
+        // 🔄 Si falla o se rechaza, devolver la visita
+        if (request && ["REJECTED", "ERROR"].includes(mappedStatus)) {
+            try {
+                const property = await Property.findOne({
+                    where: sequelize.where(
+                        sequelize.json('data.url'),
+                        request.property_url
+                    ),
+                });
+                if (property) {
+                    await property.update({ visits: property.visits + 1 });
+                    console.log(`🔼 Visita devuelta a propiedad: ${request.property_url}`);
+                }
+            } catch (propErr) {
+                console.warn('⚠️  No se pudo devolver visita por error al buscar propiedad:', propErr?.message || propErr);
+            }
+        }
+
+        // 3. Publicar validación en broker
+        const payload = {
+            request_id: result.buy_order,
+            timestamp: new Date().toISOString(),
+            status: mappedStatus,
+            reason: result.response_code === 0 ? "Pago aprobado" : "Pago fallido"
+        };
+        client.publish("properties/validation", JSON.stringify(payload));
+        console.log("📤 Enviado a properties/validation:", payload);
+
+        // 4. Enviar notificación por correo al usuario
+        try {
+            if (request && request.user_id) {
+                const user = await User.findByPk(request.user_id);
+                if (user && user.email) {
+                    await sendPaymentNotification({
+                        to: user.email,
+                        userName: user.full_name,
+                        status: mappedStatus,
+                        orderId: result.buy_order,
+                        reason: payload.reason,
+                        amount: result.amount,
+                        propertyUrl: request.property_url,
+                    });
+                    console.log(`📧 Correo enviado a ${user.email} (${mappedStatus})`);
+                } else {
+                    console.warn('⚠️ Usuario sin correo registrado:', request.user_id);
+                }
+            }
+        } catch (emailError) {
+            console.error('❌ Error enviando correo de notificación:', emailError);
+            // No fallar la transacción si el correo falla
+        }
+
+        // 5. Responder al frontend
+        ctx.body = {
+            message: "Resultado de la transacción",
+            result
+        };
+    } catch (err) {
+        console.error("❌ Error en /webpay/commit:", err);
+        ctx.status = 500;
+        ctx.body = { error: "Error confirmando transacción", details: err.message };
     }
-
-    // 3. Publicar validación en broker
-    const payload = {
-      request_id: result.buy_order,
-      timestamp: new Date().toISOString(),
-      status: mappedStatus,
-      reason: result.response_code === 0 ? "Pago aprobado" : "Pago fallido"
-    };
-    client.publish("properties/validation", JSON.stringify(payload));
-    console.log("📤 Enviado a properties/validation:", payload);
-
-    // 4. Responder al frontend
-    ctx.body = {
-      message: "Resultado de la transacción",
-      result
-    };
-  } catch (err) {
-    console.error("❌ Error en /webpay/commit:", err);
-    ctx.status = 500;
-    ctx.body = { error: "Error confirmando transacción", details: err.message };
-  }
 });
 
 router.get('/webpay/commit', async ctx => {
-  const { token_ws, TBK_TOKEN, TBK_ORDEN_COMPRA } = ctx.query;
+    const { token_ws, TBK_TOKEN, TBK_ORDEN_COMPRA } = ctx.query;
 
-  try {
-    if (token_ws) {
-      // ✅ Caso normal: commit de transacción
-      const result = await commitTransaction(token_ws);
-      const mappedStatus = mapWebpayStatus(result);
+    try {
+        if (token_ws) {
+            // ✅ Caso normal: commit de transacción
+            const result = await commitTransaction(token_ws);
+            const mappedStatus = mapWebpayStatus(result);
 
-      await Request.update(
-        { status: mappedStatus },
-        { where: { deposit_token: token_ws } }
-      );
+            await Request.update(
+                { status: mappedStatus },
+                { where: { deposit_token: token_ws } }
+            );
 
-      const frontendUrl = process.env.FRONTEND_URL || "http://";
-      ctx.redirect(`${frontendUrl}/payment-result?status=${mappedStatus}&order=${result.buy_order}`);
+            const frontendUrl = process.env.FRONTEND_URL || "http://";
+            ctx.redirect(`${frontendUrl}/payment-result?status=${mappedStatus}&order=${result.buy_order}`);
 
-    } else if (TBK_TOKEN) {
-      // ❌ Caso de anulación por el usuario
-      console.log("🚫 Compra anulada por el usuario:", TBK_TOKEN, TBK_ORDEN_COMPRA);
+        } else if (TBK_TOKEN) {
+            // ❌ Caso de anulación por el usuario
+            console.log("🚫 Compra anulada por el usuario:", TBK_TOKEN, TBK_ORDEN_COMPRA);
 
-      await Request.update(
-        { status: "REJECTED", reason: "Usuario anuló la compra" },
-        { where: { buy_order: TBK_ORDEN_COMPRA } }
-      );
+            await Request.update(
+                { status: "REJECTED", reason: "Usuario anuló la compra" },
+                { where: { buy_order: TBK_ORDEN_COMPRA } }
+            );
 
-      const frontendUrl = process.env.FRONTEND_URL || "http://";
-      ctx.redirect(`${frontendUrl}/payment-result?status=REJECTED&order=${TBK_ORDEN_COMPRA}`);
+            const frontendUrl = process.env.FRONTEND_URL || "http://";
+            ctx.redirect(`${frontendUrl}/payment-result?status=REJECTED&order=${TBK_ORDEN_COMPRA}`);
 
-    } else {
-      ctx.status = 400;
-      ctx.body = { error: "Falta token_ws o TBK_TOKEN en query" };
+        } else {
+            ctx.status = 400;
+            ctx.body = { error: "Falta token_ws o TBK_TOKEN en query" };
+        }
+
+    } catch (err) {
+        console.error("❌ Error en GET /webpay/commit:", err);
+        ctx.redirect(`${process.env.FRONTEND_URL}/payment-result?status=ERROR`);
     }
-
-  } catch (err) {
-    console.error("❌ Error en GET /webpay/commit:", err);
-    ctx.redirect(`${process.env.FRONTEND_URL}/payment-result?status=ERROR`);
-  }
 });
 
 // --- APP ---
