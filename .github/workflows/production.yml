@@ -1,0 +1,70 @@
+name: Production Build
+
+on:
+  push:
+    branches:
+      - production
+
+env:
+  AWS_REGION: us-east-1
+  ECR_PUBLIC_ALIAS: ${{ vars.AWS_ECR_PUBLIC_ALIAS }}
+  WEB_SERVER_REPOSITORY: ${{ vars.ECR_WEB_SERVER_REPOSITORY }}
+  LISTENER_REPOSITORY: ${{ vars.ECR_LISTENER_REPOSITORY }}
+
+jobs:
+  build-and-push:
+    name: Build and publish Docker images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR Public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: Build and push Docker images
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ECR_PUBLIC_ALIAS}" ] || [ -z "${WEB_SERVER_REPOSITORY}" ] || [ -z "${LISTENER_REPOSITORY}" ]; then
+            echo "ECR repository metadata is missing. Configure the repository variables before running this workflow." >&2
+            exit 1
+          fi
+
+          REGISTRY="public.ecr.aws/${ECR_PUBLIC_ALIAS}"
+          IMAGE_TAG="${GITHUB_SHA}"
+
+          WEB_IMAGE="${REGISTRY}/${WEB_SERVER_REPOSITORY}:${IMAGE_TAG}"
+          LISTENER_IMAGE="${REGISTRY}/${LISTENER_REPOSITORY}:${IMAGE_TAG}"
+
+          echo "Building web server image ${WEB_IMAGE}"
+          docker build -t "${WEB_IMAGE}" -t "${REGISTRY}/${WEB_SERVER_REPOSITORY}:latest" ./src/web_server
+
+          echo "Building listener image ${LISTENER_IMAGE}"
+          docker build -t "${LISTENER_IMAGE}" -t "${REGISTRY}/${LISTENER_REPOSITORY}:latest" ./src/listener
+
+          echo "Publishing Docker images"
+          docker push "${WEB_IMAGE}"
+          docker push "${REGISTRY}/${WEB_SERVER_REPOSITORY}:latest"
+          docker push "${LISTENER_IMAGE}"
+          docker push "${REGISTRY}/${LISTENER_REPOSITORY}:latest"
+
+          {
+            echo "## Published images"
+            echo ""
+            echo "- \`${WEB_IMAGE}\`"
+            echo "- \`${REGISTRY}/${WEB_SERVER_REPOSITORY}:latest\`"
+            echo "- \`${LISTENER_IMAGE}\`"
+            echo "- \`${REGISTRY}/${LISTENER_REPOSITORY}:latest\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
