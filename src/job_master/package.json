@@ -1,0 +1,20 @@
+{
+  "name": "job-master",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "worker": "node worker.js"
+  },
+  "dependencies": {
+    "@koa/router": "^14.0.0",
+    "bullmq": "^4.17.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ioredis": "^5.4.1",
+    "koa": "^2.14.2",
+    "koa-body": "^6.0.1",
+    "pg": "^8.11.5"
+  }
+}
