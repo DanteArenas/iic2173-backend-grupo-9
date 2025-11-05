@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7
+    container_name: recs-redis
+    restart: unless-stopped
+
+  job_master:
+    build: ./job_master
+    container_name: recs-job-master
+    restart: unless-stopped
+    env_file:
+      - .env.recs
+    ports:
+      # expone el API del job master hacia afuera de la EC2
+      - "8080:8080"
+    depends_on:
+      - redis
+
+  rec_worker:
+    build: ./job_master
+    container_name: recs-worker-1
+    restart: unless-stopped
+    command: ["node", "worker.js"]
+    env_file:
+      - .env.recs
+    depends_on:
+      - job_master
+      - redis

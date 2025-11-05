@@ -1195,12 +1195,9 @@ async function ensureInvoiceForRequestRow(requestRow) {
     if (!requestRow) return;
     if (String(requestRow.status || '').toUpperCase() !== 'ACCEPTED') return;
 
-    // Si ya hay URL, intenta HEAD; si expiró, regeneras
-    if (requestRow.invoice_url) {
-      try {
-        const head = await (global.fetch || require('undici').fetch)(requestRow.invoice_url, { method: 'HEAD' });
-        if (head.ok) return;
-      } catch { /* expirada → sigue */ }
+    // si ya tenemos una URL nuestra (que apunta a /invoices/...), la dejamos
+    if (requestRow.invoice_url && requestRow.invoice_url.includes('/invoices/')) {
+      return;
     }
 
     const buyer = await User.findByPk(requestRow.user_id);
@@ -1208,12 +1205,17 @@ async function ensureInvoiceForRequestRow(requestRow) {
       where: sequelize.where(sequelize.json('data.url'), requestRow.property_url),
     });
 
+    // esto ahora guarda local y devuelve la URL estable
     const { url } = await generarBoletaDesdeApiGateway({ requestRow, user: buyer, property });
-    if (url) await requestRow.update({ invoice_url: url });
+
+    if (url) {
+      await requestRow.update({ invoice_url: url });
+    }
   } catch (e) {
-    console.error('ensureInvoiceForRequestRow (serverless):', e.message);
+    console.error('ensureInvoiceForRequestRow (local copy):', e.message);
   }
 }
+
 
 // ---- WEBPAY RETURN
 
