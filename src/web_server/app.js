@@ -400,7 +400,7 @@ const router = new Router();
 router.get('/workers/heartbeat', async (ctx) => {
   const t0 = Date.now();
   try {
-    const res = await _fetch(`${JOB_MASTER_URL}/health`, {
+    const res = await _fetch(`${JOB_MASTER_URL}/heartbeat`, {
       headers: { Authorization: `Bearer ${JOB_MASTER_TOKEN}` },
     });
     const ok = res.ok;
