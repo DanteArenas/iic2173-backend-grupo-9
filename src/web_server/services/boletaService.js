@@ -1,31 +1,9 @@
 // src/web_server/services/boletaService.js
-const fs = require('fs');
-const path = require('path');
 const { fetch: undiciFetch } = require('undici');
 const _fetch = global.fetch || undiciFetch;
 
-const BOLETA_API_URL = process.env.BOLETA_API_URL; // ej: https://....execute-api.../boleta
-if (!BOLETA_API_URL) {
-  console.warn('[boletaService] BOLETA_API_URL no está configurada en .env');
-}
+const BOLETA_API_URL = process.env.BOLETA_API_URL;
 
-// carpeta donde vamos a guardar las boletas de forma permanente
-const INVOICES_DIR = path.join(__dirname, '..', 'invoices'); // src/web_server/invoices
-
-// nos aseguramos de que exista
-if (!fs.existsSync(INVOICES_DIR)) {
-  fs.mkdirSync(INVOICES_DIR, { recursive: true });
-}
-
-/**
- * Llama a la Lambda que genera la boleta y guarda una copia local,
- * devolviendo la URL local estable (/invoices/<request_id>.pdf).
- *
- * @param {Object} params
- * @param {Object} params.requestRow - fila de purchase_requests
- * @param {Object} params.user - instancia de User
- * @param {Object} params.property - instancia de Property
- */
 async function generarBoletaDesdeApiGateway({ requestRow, user, property }) {
   if (!BOLETA_API_URL) {
     throw new Error('BOLETA_API_URL not set');
@@ -33,7 +11,6 @@ async function generarBoletaDesdeApiGateway({ requestRow, user, property }) {
 
   const requestId = requestRow?.request_id || `req-${Date.now()}`;
 
-  // datos que ya estabas mandando
   const grupo = 'Grupo-9';
   const usuario = {
     nombre: user?.full_name || 'Usuario',
@@ -70,35 +47,23 @@ async function generarBoletaDesdeApiGateway({ requestRow, user, property }) {
   }
 
   const json = await res.json();
-  // esperamos algo como { ok: true, url: 'https://s3....' }
-  if (!json?.ok || !json?.url) {
-    throw new Error(`Lambda /boleta respuesta inválida: ${JSON.stringify(json)}`);
+
+  // 👇 AQUÍ la parte importante
+  // si la Lambda ya trae public_url (porque le pusiste PUBLIC_BASE_URL), usamos esa
+  const publicUrl = json.public_url;
+  const signedUrl = json.url;
+
+  if (publicUrl) {
+    // esta la puedes guardar en la columna invoice_url
+    return { url: publicUrl };
   }
 
-  // 2) descargar el PDF desde la URL temporal de S3
-  const pdfRes = await _fetch(json.url);
-  if (!pdfRes.ok) {
-    throw new Error(`No se pudo descargar el PDF de la boleta desde S3 (${pdfRes.status})`);
+  // fallback: si por alguna razón no hay public_url, devolvemos la firmada
+  if (signedUrl) {
+    return { url: signedUrl };
   }
 
-  const arrayBuffer = await pdfRes.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-
-  // 3) guardar localmente con un nombre estable
-  const filename = `${requestId}.pdf`;
-  const filePath = path.join(INVOICES_DIR, filename);
-  fs.writeFileSync(filePath, buffer);
-
-  // 4) construir URL pública estable que sirve Koa
-  // OJO: aquí usamos la base del API si existe, si no, solo dejamos la ruta relativa
-  const base =
-    process.env.PUBLIC_API_BASE_URL ||
-    process.env.API_BASE_URL ||
-    `http://localhost:${process.env.APP_PORT || 3000}`;
-  const publicUrl = `${base.replace(/\/$/, '')}/invoices/${filename}`;
-
-  // devolvemos la URL estable (no la temporal de S3)
-  return { url: publicUrl, localPath: filePath };
+  throw new Error(`Lambda /boleta respuesta inválida: ${JSON.stringify(json)}`);
 }
 
 module.exports = { generarBoletaDesdeApiGateway };
