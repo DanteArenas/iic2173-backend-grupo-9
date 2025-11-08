@@ -1,7 +1,9 @@
 version: "3.9"
 
 services:
-  # PostgreSQL
+  # -------------------------
+  # PostgreSQL (Base de datos)
+  # -------------------------
   postgres:
     image: postgres:15-alpine
     container_name: properties-db
@@ -25,13 +27,17 @@ services:
       retries: 5
       start_period: 30s
 
-  # Redis (cola de trabajos)
+  # ---------------------
+  # Redis (cola de jobs)
+  # ---------------------
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     networks: [app-network]
 
+  # ---------------------
   # Listener MQTT
+  # ---------------------
   listener:
     build: ./src/listener
     container_name: mqtt-listener
@@ -45,12 +51,12 @@ services:
         condition: service_healthy
     networks: [app-network]
     volumes:
-      - ./src/listener/MQTT_suscriber.js:/app/MQTT_suscriber.js
-      - ./src/listener/mqttClient.js:/app/mqttClient.js
-      - ./src/listener/sendPurchaseRequest.js:/app/sendPurchaseRequest.js
+      - ./src/listener:/app
       - ./src/web_server:/web_server
-
-  # Web Server (API principal)
+      - /app/node_modules  # evita perder dependencias (como newrelic)
+  # ------------------------
+  # Web Server principal (API)
+  # ------------------------
   web_server:
     build: ./src/web_server
     restart: unless-stopped
@@ -63,7 +69,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      job_master:
+      redis:
         condition: service_started
     networks: [app-network]
     volumes:
@@ -71,7 +77,9 @@ services:
       - ./src/listener:/app/listener
       - /app/node_modules
 
-  # Réplica Web Server
+  # --------------------------
+  # Réplica Web Server (API 2)
+  # --------------------------
   web_server_2:
     build: ./src/web_server
     restart: unless-stopped
@@ -84,7 +92,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      job_master:
+      redis:
         condition: service_started
     networks: [app-network]
     volumes:
@@ -92,36 +100,9 @@ services:
       - ./src/listener:/app/listener
       - /app/node_modules
 
-  # Job Master (API interna)
-  job_master:
-    build: ./src/job_master
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      DOTENV_PATH: /app/../../.env
-    ports:
-      - "8080:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks: [app-network]
-
-  # Worker de recomendaciones
-  rec-worker:
-    build: ./src/rec-worker
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      DOTENV_PATH: /app/../../.env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks: [app-network]
-
+# --------------------------
+# Volúmenes y Red interna
+# --------------------------
 volumes:
   postgres_data:
 
