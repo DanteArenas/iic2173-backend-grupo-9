@@ -38,6 +38,7 @@ client.on('connect', () => {
 
 client.on('error', (err) => {
     console.error('❌ Error de conexión MQTT:', err);
+    console.log(`Conexión MQTT fallida: ${process.env.HOST}:${process.env.PORT} `);
     // No llamar client.end(); dejamos que el cliente reintente según política interna de mqtt.js
 });
 

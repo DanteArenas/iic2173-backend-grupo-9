@@ -86,7 +86,7 @@ async function subscribeAllTopics() {
     await Promise.all([
         subscribeWithRetry('properties/info'),
         subscribeWithRetry('properties/validation'),
-        subscribeWithRetry('properties/requests'),
+        subscribeWithRetry('properties/requests-1'),
     ]);
 }
 
@@ -183,49 +183,79 @@ client.on('message', async (topic, message) => {
     }
 
 
-    if (topic === 'properties/requests') {
+    // Dentro de client.on('message', ...)
+    if (topic === 'properties/requests-1') {
+        let requestMsg; // Definir fuera para usar en catch
         try {
-            const requestMsg = JSON.parse(message.toString());
+            requestMsg = JSON.parse(message.toString());
             console.log("📩 Request recibida:", requestMsg);
 
-            const { request_id, group_id, url, operation } = requestMsg;
+            const { request_id, group_id, url, operation, amount_clp } = requestMsg; // Extraer amount_clp si viene
 
+            // Validar que request_id existe
+            if (!request_id) {
+                console.error("❌ Mensaje en properties/requests sin request_id:", requestMsg);
+                return; // Ignorar mensaje inválido
+            }
 
             if (String(group_id) === String(process.env.GROUP_ID)) {
                 console.log(`Request ${request_id} es de mi grupo (${group_id}), ignorando.`);
                 return;
             }
 
-
             console.log(` Request de otro grupo (${group_id}), registrando...`);
 
-            await Request.create({
-                request_id,
-                property_url: url,
-                amount_clp: 0, // monto?
-                status: "OK",
-                reason: `Request recibida de grupo ${group_id}`,
+            // 👇👇👇 REEMPLAZO CON findOrCreate 👇👇👇
+            const [request, created] = await Request.findOrCreate({
+                where: { request_id: request_id }, // Busca por el ID único
+                defaults: { // Datos a usar SOLO si NO se encuentra y se debe crear
+                    property_url: url,
+                    // Usa el monto del mensaje si existe, sino 0 o null según tu lógica
+                    amount_clp: typeof amount_clp === 'number' ? amount_clp : 0,
+                    status: 'OK', // O 'PENDING'? Define qué estado tiene una request externa
+                    reason: `Request recibida de grupo ${group_id}`,
+                    buy_order: null,   // Explícitamente null
+                    user_id: null,     // Explícitamente null (no es nuestro usuario)
+                    deposit_token: null, // Explícitamente null
+                    retry_used: false
+                }
             });
 
+            if (created) {
+                console.log(`✅ Request ${request_id} de grupo ${group_id} registrada (NUEVA).`);
 
-            const property = await Property.findOne({
-                where: sequelize.where(
-                    sequelize.json('data.url'),
-                    url
-                ),
-            });
-            if (property && property.visits > 0) {
-                await property.update({ visits: property.visits - 1 });
+                // Solo decrementa visitas y loguea si es NUEVA
+                const property = await Property.findOne({
+                    where: sequelize.where(
+                        sequelize.json('data.url'),
+                        url
+                    ),
+                });
+                if (property && property.visits > 0) {
+                    // Usar decrement es más seguro contra condiciones de carrera
+                    await property.decrement('visits');
+                    console.log(`🔽 Visita decrementada para propiedad ${url} por request externa ${request_id}.`);
+                } else if (property) {
+                    console.warn(`⚠️ No se decrementó visita para ${url} (visits=${property.visits}) por request externa ${request_id}.`);
+                }
+
+                await EventLog.create({
+                    type: 'REQUEST_OTHER_GROUP',
+                    payload: requestMsg,
+                    related_request_id: request_id,
+                });
+
+            } else {
+                console.log(`☑️ Request ${request_id} de grupo ${group_id} ya existía (IGNORADA).`);
+                // NO decrementes visitas ni loguees de nuevo si ya existía
             }
-
-            await EventLog.create({
-                type: 'REQUEST_OTHER_GROUP',
-                payload: requestMsg,
-                related_request_id: request_id,
-            });
+            // 👆👆👆 FIN DEL REEMPLAZO 👆👆👆
 
         } catch (err) {
-            console.error("Error procesando request:", err);
+            // Mejor log para identificar qué request falló
+            const reqId = requestMsg ? requestMsg.request_id : 'desconocido';
+            console.error(`Error procesando request ${reqId} de properties/requests:`, err);
         }
     }
+    
 });

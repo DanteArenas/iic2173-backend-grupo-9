@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   # PostgreSQL
   postgres:
@@ -23,20 +25,21 @@ services:
       retries: 5
       start_period: 30s
 
-  # Redis (cola)
+  # Redis (cola de trabajos)
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"   # opcional, útil para debug local
     networks: [app-network]
 
-  # Listener MQTT (tu servicio existente)
+  # Listener MQTT
   listener:
     build: ./src/listener
     container_name: mqtt-listener
     restart: unless-stopped
     env_file: [.env]
+    environment:
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY_LISTENER}
+      NEW_RELIC_APP_NAME: "grupo9-listener"
     depends_on:
       postgres:
         condition: service_healthy
@@ -47,11 +50,14 @@ services:
       - ./src/listener/sendPurchaseRequest.js:/app/sendPurchaseRequest.js
       - ./src/web_server:/web_server
 
-  # Web Server (tu API principal)
+  # Web Server (API principal)
   web_server:
     build: ./src/web_server
     restart: unless-stopped
     env_file: [.env]
+    environment:
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY_WEB_SERVER}
+      NEW_RELIC_APP_NAME: "grupo9-web_server"
     ports:
       - "3000:3000"
     depends_on:
@@ -65,10 +71,14 @@ services:
       - ./src/listener:/app/listener
       - /app/node_modules
 
+  # Réplica Web Server
   web_server_2:
     build: ./src/web_server
     restart: unless-stopped
     env_file: [.env]
+    environment:
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY_WEB_SERVER_2}
+      NEW_RELIC_APP_NAME: "grupo9-web_server_2"
     ports:
       - "3001:3000"
     depends_on:
@@ -82,9 +92,9 @@ services:
       - ./src/listener:/app/listener
       - /app/node_modules
 
-  # Job Master (API interna RNF01)
+  # Job Master (API interna)
   job_master:
-    build: ./src/job-_master
+    build: ./src/job_master
     restart: unless-stopped
     env_file: [.env]
     environment:

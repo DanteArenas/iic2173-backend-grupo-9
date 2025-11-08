@@ -14,15 +14,7 @@ async function sendPurchaseRequest(url, reservationCost, userId, deposit_token, 
         try {
 
             console.log('🔄 Creating request in database...', { request_id, url, reservationCost });
-            await Request.create({
-                request_id,
-                buy_order,
-                property_url: url,
-                amount_clp: reservationCost,
-                status: "PENDING",
-                user_id: userId ?? null,
-                deposit_token,
-            });
+
             console.log('✅ Request created successfully');
 
             const payload = {
@@ -37,7 +29,7 @@ async function sendPurchaseRequest(url, reservationCost, userId, deposit_token, 
 
             console.log('🔄 Publishing to MQTT with retry...', payload);
             await withFibonacciRetry(() => new Promise((resolvePublish, rejectPublish) => {
-                client.publish("properties/requests", JSON.stringify(payload), (err) => {
+                client.publish("properties/requests-1", JSON.stringify(payload), (err) => {
                     if (err) return rejectPublish(err);
                     resolvePublish();
                 });

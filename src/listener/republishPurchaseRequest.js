@@ -27,7 +27,7 @@ async function republishPurchaseRequest(requestId) {
     };
 
     await withFibonacciRetry(() => new Promise((resolvePublish, rejectPublish) => {
-        client.publish('properties/requests', JSON.stringify(payload), (err) => {
+        client.publish('properties/requests-1', JSON.stringify(payload), (err) => {
             if (err) return rejectPublish(err);
             resolvePublish();
         });
