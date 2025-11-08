@@ -137,8 +137,14 @@ const buildCorsOptions = () => {
 
   if (allowedOrigins.length === 0) {
     console.warn('⚠️ CORS_ALLOWED_ORIGINS not set, allowing all origins.');
-    return { origin: '*' };
+    return {
+      origin: '*',
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowHeaders: ['Authorization', 'Content-Type'],
+      credentials: true,
+    };
   }
+
   return {
     origin: (ctx) => {
       const requestOrigin = ctx.request.header.origin;
@@ -152,8 +158,12 @@ const buildCorsOptions = () => {
       );
       return undefined;
     },
+    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Authorization', 'Content-Type'],
+    credentials: true,
   };
 };
+
 app.use(cors(buildCorsOptions()));
 
 // --- BODY PARSER
