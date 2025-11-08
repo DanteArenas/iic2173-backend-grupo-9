@@ -148,7 +148,11 @@ const buildCorsOptions = () => {
   return {
     origin: (ctx) => {
       const requestOrigin = ctx.request.header.origin;
-      if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+      if (!requestOrigin) {
+        // permit server-to-server requests (no Origin header) by reflecting first allowed entry
+        return allowedOrigins[0];
+      }
+      if (allowedOrigins.includes(requestOrigin)) {
         return requestOrigin;
       }
       console.warn(
@@ -1798,7 +1802,6 @@ process.on('SIGINT', () => {
   console.log('SIGINT signal received: closing HTTP server');
   process.exit(0);
 });
-
 
 
 

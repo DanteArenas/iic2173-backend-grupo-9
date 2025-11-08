@@ -12,6 +12,29 @@ const INVOICE_PREFIX = (process.env.INVOICE_PREFIX || "invoices").replace(/^\/|\
 const SIGNED_URL_TTL = Number(process.env.SIGNED_URL_TTL || 900);
 
 const s3 = new S3Client({ region: REGION });
+const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || "*")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const resolveOrigin = (requestOrigin) => {
+  if (!allowedOrigins.length || allowedOrigins.includes("*")) return "*";
+  if (!requestOrigin) return allowedOrigins[0];
+  return allowedOrigins.includes(requestOrigin) ? requestOrigin : allowedOrigins[0];
+};
+
+const buildCorsHeaders = (originHeader) => {
+  const origin = resolveOrigin(originHeader);
+  const headers = {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "OPTIONS,GET,POST",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
+  };
+  if (origin !== "*") headers["Access-Control-Allow-Credentials"] = "true";
+  return headers;
+};
 // ====== HELPERS ======
 const fmtNumber = (n, decimals = 0) => {
   const v = Number(n ?? 0);
@@ -200,9 +223,15 @@ const buildPdfBuffer = async (p = {}) => new Promise((resolve, reject) => {
 // ====== HANDLER ======
 
 export const handler = async (event) => {
+  const originHeader = event?.headers?.origin || event?.headers?.Origin || "";
+
+  if (event?.requestContext?.http?.method === "OPTIONS") {
+    return resp(204, null, originHeader);
+  }
+
   try {
     if (!BUCKET_NAME) {
-      return resp(500, { ok: false, error: "Missing BUCKET_NAME env" });
+      return resp(500, { ok: false, error: "Missing BUCKET_NAME env" }, originHeader);
     }
 
     const bodyText = typeof event?.body === "string" ? event.body : JSON.stringify(event?.body || {});
@@ -233,16 +262,25 @@ export const handler = async (event) => {
     );
 
     // Para que el frontend siempre funcione, devolvemos la firmada en `url`
-    return resp(200, { ok: true, url: signedUrl, public_url: publicUrl, key });
+    return resp(200, { ok: true, url: signedUrl, public_url: publicUrl, key }, originHeader);
 
   } catch (err) {
     console.error("invoice handler error:", err);
-    return resp(500, { ok: false, error: err?.message || "Internal error" });
+    return resp(500, { ok: false, error: err?.message || "Internal error" }, originHeader);
   }
 };
 
-const resp = (statusCode, data) => ({
-  statusCode,
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify(data),
-});
+const resp = (statusCode, data, originHeader = "") => {
+  const corsHeaders = buildCorsHeaders(originHeader);
+  const body = data == null ? "" : JSON.stringify(data);
+  const headers = {
+    ...corsHeaders,
+    ...(body ? { "content-type": "application/json" } : {}),
+  };
+
+  return {
+    statusCode,
+    headers,
+    body,
+  };
+};
