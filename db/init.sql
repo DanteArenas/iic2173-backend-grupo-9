@@ -1,7 +1,8 @@
 \c properties_db;
 
--- Habilitar la extensión unaccent
+-- Extensiones necesarias
 CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";  -- para gen_random_uuid()
 
 -- Crear la base de datos si no existe (opcional, solo si quieres crearla desde cero)
 -- CREATE DATABASE properties_db;
@@ -33,7 +34,6 @@ CREATE TABLE IF NOT EXISTS users (
 -- Enforce unique emails (case-insensitive)
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_idx ON users ((LOWER(email)));
 CREATE UNIQUE INDEX IF NOT EXISTS users_auth0_id_unique_idx ON users (auth0_user_id);
-
 
 -- Tipos ENUM
 DO $$
@@ -96,6 +96,21 @@ CREATE INDEX IF NOT EXISTS idx_event_logs_related_request
 CREATE INDEX IF NOT EXISTS idx_event_logs_created_at_desc
     ON event_logs (created_at DESC);
 
+-- 🔹 NUEVO: tabla recommendations para el worker de Job Master
+CREATE TABLE IF NOT EXISTS recommendations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id INTEGER NOT NULL,
+  request_id UUID NOT NULL UNIQUE,
+  items JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- (opcionales pero recomendables)
+CREATE INDEX IF NOT EXISTS idx_recommendations_user_created
+  ON recommendations (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recommendations_request
+  ON recommendations (request_id);
+
 -- Asegurar columnas que agregamos evolutivamente si el contenedor reinicia contra una BD vieja
 DO $$
 BEGIN
@@ -120,7 +135,7 @@ BEGIN
       ON purchase_requests (retry_used);
   END IF;
 
-  -- invoice_url en purchase_requests  <-- NUEVO
+  -- invoice_url en purchase_requests
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_name='purchase_requests' AND column_name='invoice_url'

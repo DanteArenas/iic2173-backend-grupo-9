@@ -38,7 +38,6 @@ const republishPurchaseRequest = require('./listener/republishPurchaseRequest');
 const { createTransaction, commitTransaction, mapWebpayStatus } = require('./services/webpayService');
 const { getUfValue } = require('./services/ufService');
 
-const { runRecommendationJob } = require('./services/recommendations');
 // =================================================================
 const { generarBoletaDesdeApiGateway } = require('./services/boletaService');
 
@@ -397,7 +396,7 @@ const computeReservationCost = async (propertyData) => {
     console.warn(
       `computeReservationCost: Unsupported currency "${currency}" provided.`
     );
-    return null;
+    return price;
   } catch (err) {
     console.error(
       `computeReservationCost: Error calculating cost for price=${price} ${currency} at ${timestamp}:`,
@@ -414,18 +413,24 @@ const router = new Router();
 router.get('/workers/heartbeat', async (ctx) => {
   const t0 = Date.now();
   try {
-    const res = await _fetch(`${process.env.JOB_MASTER_URL}/heartbeat`, {
-      headers: { Authorization: `Bearer ${process.env.JOB_MASTER_TOKEN}` },
+    // Usa las constantes de arriba
+    const res = await _fetch(`${JOB_MASTER_URL}/heartbeat`, {
+      headers: { Authorization: `Bearer ${JOB_MASTER_TOKEN}` },
     });
+
     const ok = res.ok;
     const t1 = Date.now();
     let latency = t1 - t0;
+
     try {
       const json = await res.json();
-      if (json && typeof json.latency_ms === 'number') latency = json.latency_ms;
+      if (json && typeof json.latency_ms === 'number') {
+        latency = json.latency_ms;
+      }
     } catch {
-      /* ignore */
+      // si no es JSON, ignoramos y nos quedamos con el latency local
     }
+
     ctx.body = { ok, latency_ms: latency };
   } catch (err) {
     const t1 = Date.now();
@@ -434,90 +439,139 @@ router.get('/workers/heartbeat', async (ctx) => {
     ctx.body = {
       ok: false,
       latency_ms: t1 - t0,
-      error: `Failed to reach job master: ${err.message}`,
+      error: `Failed to reach job master at ${JOB_MASTER_URL}: ${err.message}`,
     };
   }
 });
+
+
 
 /* ================================================================= */
 /* ============= RECOMENDACIONES (Usando Servicio Real) ============ */
 /* ================================================================= */
 
-// Jobs en memoria (mínimo viable)
-// job_id -> { status: 'QUEUED'|'RUNNING'|'DONE'|'ERROR', result?, error? }
-const recJobs = new Map();
-
-// =================================================================
-// ❌ ELIMINADAS LAS FUNCIONES ANTIGUAS Y CON BUG:
-// - fetchCatalogFromDb
-// - scoreProperties
-// - computeRealRecommendations
-// =================================================================
-
-// POST /recommendations/queue → encola y calcula en background (in-memory)
-// ✅ ACTUALIZADO para usar runRecommendationJob (el servicio avanzado)
 router.post('/recommendations/queue', requireAuth, async (ctx) => {
   try {
-    // opcional: garantizar existencia del usuario
-    await getOrCreateUserFromToken(ctx.state.user || {});
+    const user = await getOrCreateUserFromToken(ctx.state.user || {});
     
-    const { top_n = 8, filter = {} } = ctx.request.body || {};
-    const job_id = uuidv4();
+    // 1. Intentar obtener URL de propiedad desde el body
+    let propertyUrl = ctx.request.body.property_url;
 
-     // --- PREPARAR CONTEXTO PARA EL JOB ---
-     // El token JWT del usuario (sin 'Bearer ')
-     const token = ctx.request.headers.authorization?.split(' ')[1] || '';
-     if (!token) {
-       ctx.status = 401;
-       ctx.body = { error: 'Could not extract user token for recommendation job' };
-       return;
-     }
+    // 2. Si no viene, buscar la última compra aceptada del usuario (Fallback inteligente)
+    if (!propertyUrl) {
+        const lastRequest = await Request.findOne({
+            where: { user_id: user.id, status: 'ACCEPTED' },
+            order: [['created_at', 'DESC']]
+        });
+        if (lastRequest) {
+            propertyUrl = lastRequest.property_url;
+        }
+    }
 
-     // La URL base de ESTA MISMA API, que el worker llamará
-     const apiBaseUrl = (
-      process.env.PUBLIC_API_BASE_URL || 
-       process.env.API_BASE_URL || 
-       `http://localhost:${process.env.APP_PORT || 3000}`
-    ).replace(/\/$/, ''); // Asegura que no tenga / al final
+    if (!propertyUrl) {
+         propertyUrl = "https://portalinmobiliario.com/fallback-default-property"; 
+         console.warn(`[Web Server] Usuario ${user.id} sin historial. Usando URL fallback para recomendaciones.`);
+    }
 
-    recJobs.set(job_id, { status: 'QUEUED' });
+    const payload = {
+      user_id: user.id,
+      request_id: uuidv4(), // ID único para este trabajo
+      property_url: propertyUrl // Ahora garantizamos que no sea null
+    };
 
-    (async () => {
-      recJobs.set(job_id, { status: 'RUNNING' });
-      try {
-        // --- ESTA ES LA LLAMADA CORRECTA ---
-        // Llama al servicio avanzado importado
-        const result = await runRecommendationJob(
-          { top_n, filter },      // params
-          { apiBaseUrl, token }   // context
-        );
-        recJobs.set(job_id, { status: 'DONE', result });
-      } catch (e) {
-        console.error(`[RECS JOB ${job_id}] FAILED:`, e); // Loguear el error real
-        recJobs.set(job_id, { status: 'ERROR', error: e?.message || 'Worker error' });
-      }
-    })();
+    console.log(`[Web Server] Delegando recomendación al Job Master: ${JOB_MASTER_URL}`);
 
+    // Llamada HTTP al contenedor Job Master (Desacoplamiento real)
+    const response = await _fetch(`${JOB_MASTER_URL}/jobs/recommendations`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-job-token': JOB_MASTER_TOKEN 
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Job Master respondió con error ${response.status}: ${errText}`);
+    }
+
+    const jsonResponse = await response.json();
+    
+    // Respondemos al frontend que el trabajo fue encolado
     ctx.status = 202;
-    ctx.body = { job_id };
+    ctx.body = { 
+      message: 'Job encolado exitosamente en arquitectura distribuida',
+      job_id: jsonResponse.job_id,
+      status: 'QUEUED'
+    };
+
   } catch (err) {
-    console.error('queue error:', err);
+    console.error('Error delegando job:', err);
     ctx.status = 500;
-    ctx.body = { error: 'Queue error', details: err?.message };
+    ctx.body = { error: 'Error al conectar con el sistema de workers', details: err.message };
   }
 });
 
-// GET /recommendations/status/:job_id  → devuelve { job: { status, result?, error? } }
 router.get('/recommendations/status/:job_id', requireAuth, async (ctx) => {
   const { job_id } = ctx.params;
-  const job = recJobs.get(job_id);
-  if (!job) {
-    ctx.status = 404;
-    ctx.body = { error: 'Job not found' };
-    return;
+
+  try {
+    const response = await _fetch(`${JOB_MASTER_URL}/jobs/${job_id}`, {
+      headers: { 'x-job-token': JOB_MASTER_TOKEN },
+    });
+
+    // Leemos SIEMPRE como texto primero
+    const raw = await response.text();
+
+    // Caso 404: job no existe
+    if (response.status === 404) {
+      ctx.status = 404;
+      ctx.body = { error: 'Job not found in Master' };
+      return;
+    }
+
+    // Cualquier error 5xx/4xx que no sea 404 → devolver info cruda
+    if (!response.ok) {
+      console.error(
+        `[Web Server] Job Master devolvió error ${response.status} para job ${job_id}: ${raw}`
+      );
+      ctx.status = 502;
+      ctx.body = {
+        error: 'Job Master error',
+        status: response.status,
+        body: raw,          // acá vas a ver el "Internal Server Error" en claro
+      };
+      return;
+    }
+
+    // Si llegó aquí, response.ok === true → intentamos parsear JSON
+    let jobData;
+    try {
+      jobData = raw ? JSON.parse(raw) : null;
+    } catch (parseErr) {
+      console.error(
+        '[Web Server] Error parseando JSON de Job Master en /recommendations/status:',
+        parseErr,
+        'RAW =',
+        raw
+      );
+      ctx.status = 502;
+      ctx.body = {
+        error: 'Invalid JSON from Job Master',
+        raw,               // te muestra qué devolvió realmente
+      };
+      return;
+    }
+
+    ctx.body = { job: jobData };
+  } catch (err) {
+    console.error('Error consultando status:', err);
+    ctx.status = 500;
+    ctx.body = { error: 'Error consultando Job Master' };
   }
-  ctx.body = { job };
 });
+
 
 /* =================== FIN RECOMMENDATIONS =================== */
 
@@ -1210,12 +1264,9 @@ async function ensureInvoiceForRequestRow(requestRow) {
     if (String(requestRow.status || '').toUpperCase() !== 'ACCEPTED') return;
 
     // Si ya hay URL, intenta HEAD; si expiró, regeneras
-    if (requestRow.invoice_url) {
-      try {
-        const head = await (global.fetch || require('undici').fetch)(requestRow.invoice_url, { method: 'HEAD' });
-        if (head.ok) return;
-      } catch { /* expirada → sigue */ }
-    }
+    if (requestRow.invoice_url && requestRow.invoice_url.includes('/invoices/')) {
+	return;
+	}
 
     const buyer = await User.findByPk(requestRow.user_id);
     const property = await Property.findOne({
@@ -1223,7 +1274,10 @@ async function ensureInvoiceForRequestRow(requestRow) {
     });
 
     const { url } = await generarBoletaDesdeApiGateway({ requestRow, user: buyer, property });
-    if (url) await requestRow.update({ invoice_url: url });
+    if (url){
+	const cleaned = url.split('?')[0];
+	 await requestRow.update({ invoice_url: cleaned });
+	}
   } catch (e) {
     console.error('ensureInvoiceForRequestRow (serverless):', e.message);
   }
@@ -1281,7 +1335,9 @@ router.post(
 
       // 3) Generar boleta con Lambda si fue ACCEPTED
       if (requestRow) {
-        await ensureInvoiceForRequestRow(requestRow);
+       try {  await ensureInvoiceForRequestRow(requestRow); } catch(e) {
+	console.log('exploto lambda');
+	console.log(e.message);}
       }
 
       // 4) PUBLICAR VALIDACIÓN POR MQTT
@@ -1538,12 +1594,11 @@ router.get('/payments/webpay/return', async (ctx) => {
 // ---- Descargar/abrir boleta
 // Ahora, en vez de servir un PDF local, redirigimos al S3 público.
 // Si no existe todavía, intentamos generarla con Lambda.
-router.get('/reservations/:request_id/invoice', requireAuth, async (ctx) => {
+router.get('/reservations/:request_id/invoice', async (ctx) => {
   const { request_id } = ctx.params;
 
-  const user = await getOrCreateUserFromToken(ctx.state.user || {});
   const reqRow = await Request.findOne({
-    where: { request_id, user_id: user.id },
+    where: { request_id },
   });
   if (!reqRow) {
     ctx.status = 404;
