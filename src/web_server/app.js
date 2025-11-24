@@ -30,6 +30,9 @@ const { Op } = require('sequelize');
 const Property = require('./models/Property');
 const User = require('./models/User');
 const Request = require('./models/Request');
+const Schedule = require('./models/Schedule');
+const Auction = require('./models/Auction');
+const ExchangeProposal = require('./models/ExchangeProposal');
 
 // Servicios internos
 const { publishValidation } = require('./services/publishValidation');
@@ -41,6 +44,7 @@ const { getUfValue } = require('./services/ufService');
 const { runRecommendationJob } = require('./services/recommendations');
 // =================================================================
 const { generarBoletaDesdeApiGateway } = require('./services/boletaService');
+const { ensureDbSchemaUpgrades } = require('./services/schemaService');
 
 // Otros helpers
 const { v4: uuidv4, validate: uuidValidate } = require('uuid');
@@ -56,28 +60,15 @@ const WEBPAY_RETURN_URL = process.env.WEBPAY_RETURN_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL; // dominio deploy
 const PUBLIC_FRONTEND_URL = process.env.PUBLIC_FRONTEND_URL; // p.e. http://localhost:5173
 const FRONT = PUBLIC_FRONTEND_URL || FRONTEND_URL || 'http://localhost:5173';
-
-// ---- Helpers DB: asegurar cambios mínimos de esquema
-async function ensureDbSchemaUpgrades() {
-  try {
-    await sequelize.query(
-      `ALTER TABLE purchase_requests
-       ADD COLUMN IF NOT EXISTS retry_used BOOLEAN NOT NULL DEFAULT FALSE`
-    );
-    await sequelize.query(
-      `CREATE INDEX IF NOT EXISTS idx_purchase_requests_retry_used
-       ON purchase_requests (retry_used)`
-    );
-    await sequelize.query(
-      `ALTER TABLE purchase_requests
-       ADD COLUMN IF NOT EXISTS invoice_url TEXT`
-    );
-
-    console.log('✅ Esquema verificado: columnas retry_used / invoice_url listas.');
-  } catch (err) {
-    console.warn('⚠️ No se pudo asegurar el esquema:', err.message || err);
-  }
-}
+const ADMIN_AUTH0_IDS = new Set(
+  (process.env.ADMIN_AUTH0_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+const DEFAULT_GROUP_ID = Number.isFinite(Number(process.env.DEFAULT_GROUP_ID))
+  ? Number(process.env.DEFAULT_GROUP_ID)
+  : null;
 
 // ---- Usuario desde token Auth0
 const getOrCreateUserFromToken = async (tokenPayload) => {
@@ -92,15 +83,23 @@ const getOrCreateUserFromToken = async (tokenPayload) => {
   const defaultName = nameClaim || emailClaim || 'Auth0 User';
   const defaultEmail =
     emailClaim || `${auth0UserId.replace(/[^a-zA-Z0-9]/g, '_')}@auth0.local`;
+  const shouldBeAdmin = ADMIN_AUTH0_IDS.has(auth0UserId);
 
   const [user] = await User.findOrCreate({
     where: { auth0_user_id: auth0UserId },
-    defaults: { full_name: defaultName, email: defaultEmail },
+    defaults: {
+      full_name: defaultName,
+      email: defaultEmail,
+      is_admin: shouldBeAdmin,
+      group_id: DEFAULT_GROUP_ID,
+    },
   });
 
   const updates = {};
   if (nameClaim && user.full_name !== nameClaim) updates.full_name = nameClaim;
   if (emailClaim && user.email !== emailClaim) updates.email = emailClaim;
+  if (shouldBeAdmin && !user.is_admin) updates.is_admin = true;
+  if (!user.group_id && DEFAULT_GROUP_ID) updates.group_id = DEFAULT_GROUP_ID;
   if (Object.keys(updates).length > 0) await user.update(updates);
 
   return user;
@@ -111,7 +110,7 @@ sequelize
   .authenticate()
   .then(async () => {
     console.log('Conexión exitosa a la base de datos con Sequelize');
-    await ensureDbSchemaUpgrades();
+    await ensureDbSchemaUpgrades(sequelize);
   })
   .catch((err) => console.error('Error de conexión con Sequelize:', err));
 
@@ -204,6 +203,33 @@ const createAuthMiddleware = () => {
   });
 };
 const requireAuth = createAuthMiddleware();
+
+const getGroupId = (user) => (user && (user.group_id || user.id)) || null;
+const scheduleFinalPrice = (schedule) => {
+  if (!schedule) return null;
+  const base = Number(schedule.price_clp) || 0;
+  const pct = Number(schedule.discount_pct) || 0;
+  const bounded = Math.min(Math.max(pct, 0), 10);
+  return Math.max(0, Math.round(base * (1 - bounded / 100)));
+};
+
+const requireAdmin = async (ctx, next) => {
+  let user;
+  try {
+    user = await getOrCreateUserFromToken(ctx.state.user || {});
+  } catch (err) {
+    ctx.status = 400;
+    ctx.body = { error: 'Invalid token payload', message: err.message };
+    return;
+  }
+  if (!user || !user.is_admin) {
+    ctx.status = 403;
+    ctx.body = { error: 'Forbidden', message: 'Admin access required' };
+    return;
+  }
+  ctx.state.dbUser = user;
+  await next();
+};
 
 // --- LOG antes de OPTIONS
 app.use(async (ctx, next) => {
@@ -410,6 +436,385 @@ const computeReservationCost = async (propertyData) => {
 // ---- Router
 const router = new Router();
 
+// ---- SCHEDULES (Public view and Admin management)
+router.get('/properties/:id/schedules', async (ctx) => {
+  const propertyId = parseInt(ctx.params.id, 10);
+  if (Number.isNaN(propertyId) || propertyId < 1) {
+    ctx.status = 400;
+    ctx.body = { error: 'Invalid property ID' };
+    return;
+  }
+  const property = await Property.findByPk(propertyId);
+  if (!property || !property.data || !property.data.url) {
+    ctx.status = 404;
+    ctx.body = { error: 'Property not found' };
+    return;
+  }
+  const schedules = await Schedule.findAll({
+    where: {
+      property_url: property.data.url,
+      status: { [Op.in]: ['AVAILABLE', 'AUCTION'] },
+    },
+    order: [['starts_at', 'ASC']],
+  });
+  ctx.body = schedules.map((s) => {
+    const plain = s.toJSON();
+    return { ...plain, final_price_clp: scheduleFinalPrice(plain) };
+  });
+});
+
+router.post(
+  '/admin/properties/:id/schedules',
+  requireAuth,
+  requireAdmin,
+  async (ctx) => {
+    const propertyId = parseInt(ctx.params.id, 10);
+    if (Number.isNaN(propertyId) || propertyId < 1) {
+      ctx.status = 400;
+      ctx.body = { error: 'Invalid property ID' };
+      return;
+    }
+    const property = await Property.findByPk(propertyId);
+    if (!property || !property.data || !property.data.url) {
+      ctx.status = 404;
+      ctx.body = { error: 'Property not found' };
+      return;
+    }
+
+    const { starts_at, ends_at, price_clp, discount_pct = 0 } =
+      ctx.request.body || {};
+
+    const startDate = new Date(starts_at);
+    const endDate = new Date(ends_at);
+    if (!starts_at || !ends_at || Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      ctx.status = 400;
+      ctx.body = { error: 'starts_at and ends_at must be valid ISO datetimes' };
+      return;
+    }
+    if (endDate <= startDate) {
+      ctx.status = 400;
+      ctx.body = { error: 'ends_at must be after starts_at' };
+      return;
+    }
+
+    const priceVal = Number(price_clp);
+    if (!Number.isFinite(priceVal) || priceVal <= 0) {
+      ctx.status = 400;
+      ctx.body = { error: 'price_clp must be a positive number' };
+      return;
+    }
+    const discountVal = Number(discount_pct);
+    if (!Number.isFinite(discountVal) || discountVal < 0 || discountVal > 10) {
+      ctx.status = 400;
+      ctx.body = { error: 'discount_pct must be between 0 and 10' };
+      return;
+    }
+
+    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
+    const schedule = await Schedule.create({
+      property_url: property.data.url,
+      starts_at: startDate,
+      ends_at: endDate,
+      price_clp: Math.round(priceVal),
+      discount_pct: Math.round(discountVal),
+      status: 'AVAILABLE',
+      created_by: adminUser.id,
+      owner_group_id: getGroupId(adminUser),
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+    ctx.status = 201;
+    ctx.body = { schedule: schedule.toJSON(), final_price_clp: scheduleFinalPrice(schedule) };
+  }
+);
+
+router.post(
+  '/admin/schedules/:id/purchase',
+  requireAuth,
+  requireAdmin,
+  async (ctx) => {
+    const scheduleId = parseInt(ctx.params.id, 10);
+    if (Number.isNaN(scheduleId) || scheduleId < 1) {
+      ctx.status = 400;
+      ctx.body = { error: 'Invalid schedule ID' };
+      return;
+    }
+    const schedule = await Schedule.findByPk(scheduleId);
+    if (!schedule) {
+      ctx.status = 404;
+      ctx.body = { error: 'Schedule not found' };
+      return;
+    }
+    const status = String(schedule.status || '').toUpperCase();
+    if (!['AVAILABLE', 'AUCTION'].includes(status)) {
+      ctx.status = 409;
+      ctx.body = { error: 'Schedule not available for purchase' };
+      return;
+    }
+
+    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
+    const groupId = getGroupId(adminUser);
+    const finalPrice = scheduleFinalPrice(schedule);
+    if (!Number.isFinite(finalPrice) || finalPrice <= 0) {
+      ctx.status = 400;
+      ctx.body = { error: 'Invalid schedule price' };
+      return;
+    }
+
+    const now = new Date();
+    await schedule.update({
+      status: 'SOLD',
+      owner_group_id: groupId,
+      updated_at: now,
+    });
+
+    const requestId = uuidv4();
+    const buyOrder = `ADM-${requestId.replace(/-/g, '').slice(0, 22)}`;
+    const purchase = await Request.create({
+      request_id: requestId,
+      buy_order: buyOrder,
+      user_id: adminUser.id,
+      property_url: schedule.property_url,
+      amount_clp: finalPrice,
+      status: 'ACCEPTED',
+      reason: 'Admin purchase for group',
+      retry_used: false,
+      deposit_token: null,
+      invoice_url: null,
+      schedule_id: schedule.id,
+      created_at: now,
+      updated_at: now,
+    });
+
+    ctx.body = {
+      message: 'Schedule purchased for admin group',
+      schedule: schedule.toJSON(),
+      purchase: purchase.toJSON(),
+    };
+  }
+);
+
+router.post(
+  '/admin/schedules/:id/auction',
+  requireAuth,
+  requireAdmin,
+  async (ctx) => {
+    const scheduleId = parseInt(ctx.params.id, 10);
+    if (Number.isNaN(scheduleId) || scheduleId < 1) {
+      ctx.status = 400;
+      ctx.body = { error: 'Invalid schedule ID' };
+      return;
+    }
+    const schedule = await Schedule.findByPk(scheduleId);
+    if (!schedule) {
+      ctx.status = 404;
+      ctx.body = { error: 'Schedule not found' };
+      return;
+    }
+
+    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
+    const groupId = getGroupId(adminUser);
+    if (!groupId || schedule.owner_group_id !== groupId) {
+      ctx.status = 403;
+      ctx.body = { error: 'Forbidden', message: 'Schedule not owned by your group' };
+      return;
+    }
+    if (String(schedule.status || '').toUpperCase() === 'AUCTION') {
+      ctx.status = 409;
+      ctx.body = { error: 'Schedule is already under auction' };
+      return;
+    }
+    if (String(schedule.status || '').toUpperCase() !== 'SOLD') {
+      ctx.status = 400;
+      ctx.body = { error: 'Only purchased schedules can be auctioned' };
+      return;
+    }
+
+    const minPrice = Number(ctx.request.body?.min_price);
+    const now = new Date();
+    const auction = await Auction.create({
+      schedule_id: schedule.id,
+      owner_group_id: groupId,
+      min_price: Number.isFinite(minPrice) && minPrice > 0 ? Math.round(minPrice) : scheduleFinalPrice(schedule),
+      status: 'OPEN',
+      created_at: now,
+      updated_at: now,
+    });
+    await schedule.update({ status: 'AUCTION', updated_at: now });
+
+    ctx.status = 201;
+    ctx.body = { auction: auction.toJSON(), schedule: schedule.toJSON() };
+  }
+);
+
+router.post(
+  '/admin/auctions/:id/proposals',
+  requireAuth,
+  requireAdmin,
+  async (ctx) => {
+    const auctionId = parseInt(ctx.params.id, 10);
+    if (Number.isNaN(auctionId) || auctionId < 1) {
+      ctx.status = 400;
+      ctx.body = { error: 'Invalid auction ID' };
+      return;
+    }
+    const auction = await Auction.findByPk(auctionId);
+    if (!auction) {
+      ctx.status = 404;
+      ctx.body = { error: 'Auction not found' };
+      return;
+    }
+    if (String(auction.status || '').toUpperCase() !== 'OPEN') {
+      ctx.status = 409;
+      ctx.body = { error: 'Auction is not open' };
+      return;
+    }
+
+    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
+    const fromGroup = getGroupId(adminUser);
+    const toGroup = auction.owner_group_id;
+    if (!fromGroup || !toGroup) {
+      ctx.status = 400;
+      ctx.body = { error: 'Group information missing for proposal' };
+      return;
+    }
+    if (fromGroup === toGroup) {
+      ctx.status = 400;
+      ctx.body = { error: 'Cannot propose exchange to your own group' };
+      return;
+    }
+
+    const { offering_schedule_id, message } = ctx.request.body || {};
+    let offeringScheduleId = null;
+    if (offering_schedule_id) {
+      const offer = await Schedule.findByPk(offering_schedule_id);
+      if (!offer) {
+        ctx.status = 404;
+        ctx.body = { error: 'Offering schedule not found' };
+        return;
+      }
+      if (offer.owner_group_id !== fromGroup) {
+        ctx.status = 403;
+        ctx.body = { error: 'You can only offer schedules owned by your group' };
+        return;
+      }
+      offeringScheduleId = offer.id;
+    }
+
+    const now = new Date();
+    const proposal = await ExchangeProposal.create({
+      auction_id: auction.id,
+      from_group_id: fromGroup,
+      to_group_id: toGroup,
+      offering_schedule_id: offeringScheduleId,
+      message: message || null,
+      status: 'PENDING',
+      created_at: now,
+      updated_at: now,
+    });
+
+    ctx.status = 201;
+    ctx.body = { proposal: proposal.toJSON() };
+  }
+);
+
+router.post(
+  '/admin/proposals/:id/accept',
+  requireAuth,
+  requireAdmin,
+  async (ctx) => {
+    const proposalId = parseInt(ctx.params.id, 10);
+    if (Number.isNaN(proposalId) || proposalId < 1) {
+      ctx.status = 400;
+      ctx.body = { error: 'Invalid proposal ID' };
+      return;
+    }
+    const proposal = await ExchangeProposal.findByPk(proposalId);
+    if (!proposal) {
+      ctx.status = 404;
+      ctx.body = { error: 'Proposal not found' };
+      return;
+    }
+    if (String(proposal.status || '').toUpperCase() !== 'PENDING') {
+      ctx.status = 409;
+      ctx.body = { error: 'Proposal already resolved' };
+      return;
+    }
+
+    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
+    const myGroup = getGroupId(adminUser);
+    if (!myGroup || proposal.to_group_id !== myGroup) {
+      ctx.status = 403;
+      ctx.body = { error: 'Forbidden', message: 'Proposal not addressed to your group' };
+      return;
+    }
+
+    const auction = await Auction.findByPk(proposal.auction_id);
+    const schedule = auction ? await Schedule.findByPk(auction.schedule_id) : null;
+    const now = new Date();
+
+    await proposal.update({ status: 'ACCEPTED', updated_at: now });
+    if (auction && auction.status !== 'CLOSED') {
+      await auction.update({ status: 'CLOSED', updated_at: now });
+    }
+    if (schedule) {
+      await schedule.update({
+        owner_group_id: proposal.from_group_id || schedule.owner_group_id,
+        status: 'SOLD',
+        updated_at: now,
+      });
+    }
+    if (proposal.offering_schedule_id) {
+      const offer = await Schedule.findByPk(proposal.offering_schedule_id);
+      if (offer) {
+        await offer.update({ owner_group_id: myGroup, updated_at: now });
+      }
+    }
+
+    ctx.body = {
+      message: 'Proposal accepted',
+      proposal: proposal.toJSON(),
+      auction: auction ? auction.toJSON() : null,
+    };
+  }
+);
+
+router.post(
+  '/admin/proposals/:id/reject',
+  requireAuth,
+  requireAdmin,
+  async (ctx) => {
+    const proposalId = parseInt(ctx.params.id, 10);
+    if (Number.isNaN(proposalId) || proposalId < 1) {
+      ctx.status = 400;
+      ctx.body = { error: 'Invalid proposal ID' };
+      return;
+    }
+    const proposal = await ExchangeProposal.findByPk(proposalId);
+    if (!proposal) {
+      ctx.status = 404;
+      ctx.body = { error: 'Proposal not found' };
+      return;
+    }
+    if (String(proposal.status || '').toUpperCase() !== 'PENDING') {
+      ctx.status = 409;
+      ctx.body = { error: 'Proposal already resolved' };
+      return;
+    }
+
+    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
+    const myGroup = getGroupId(adminUser);
+    if (!myGroup || proposal.to_group_id !== myGroup) {
+      ctx.status = 403;
+      ctx.body = { error: 'Forbidden', message: 'Proposal not addressed to your group' };
+      return;
+    }
+
+    await proposal.update({ status: 'REJECTED', updated_at: new Date() });
+    ctx.body = { message: 'Proposal rejected', proposal: proposal.toJSON() };
+  }
+);
+
 // -------- PUBLIC
 router.get('/workers/heartbeat', async (ctx) => {
   const t0 = Date.now();
@@ -531,6 +936,8 @@ router.get('/me', requireAuth, async (ctx) => {
       email: user.email,
       phone: user.phone,
       auth0_user_id: user.auth0_user_id,
+      is_admin: Boolean(user.is_admin),
+      group_id: user.group_id ?? null,
     };
   } catch (err) {
     console.error('Error in /me route:', err);
@@ -1802,6 +2209,3 @@ process.on('SIGINT', () => {
   console.log('SIGINT signal received: closing HTTP server');
   process.exit(0);
 });
-
-
-

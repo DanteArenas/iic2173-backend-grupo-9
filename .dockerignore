@@ -1,0 +1,12 @@
+# Exclude VCS metadata and OS junk
+.git
+.DS_Store
+
+# Node artifacts
+node_modules
+**/node_modules
+npm-debug.log*
+yarn-error.log*
+
+# Local environment files
+.env

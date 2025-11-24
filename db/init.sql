@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
   status          purchase_status NOT NULL DEFAULT 'OK',
   reason          TEXT NULL,                        -- descripción humana del estado
   deposit_token   TEXT NULL,                        -- token_ws de Webpay
+  schedule_id     INTEGER NULL,                     -- bloque horario reservado
   retry_used      BOOLEAN NOT NULL DEFAULT FALSE,   -- ya usó retry?
   invoice_url     TEXT NULL,                        -- <-- URL pública del PDF de boleta
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -95,6 +96,51 @@ CREATE INDEX IF NOT EXISTS idx_event_logs_related_request
     ON event_logs (related_request_id);
 CREATE INDEX IF NOT EXISTS idx_event_logs_created_at_desc
     ON event_logs (created_at DESC);
+
+-- Tabla property_schedules
+CREATE TABLE IF NOT EXISTS property_schedules (
+  id SERIAL PRIMARY KEY,
+  property_url TEXT NOT NULL,
+  starts_at TIMESTAMPTZ NOT NULL,
+  ends_at TIMESTAMPTZ NOT NULL,
+  price_clp INTEGER NOT NULL,
+  discount_pct INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'AVAILABLE',
+  created_by INTEGER,
+  owner_group_id INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_property_schedules_property_status
+    ON property_schedules (property_url, status);
+
+-- Tabla property_auctions
+CREATE TABLE IF NOT EXISTS property_auctions (
+  id SERIAL PRIMARY KEY,
+  schedule_id INTEGER NOT NULL REFERENCES property_schedules(id) ON DELETE CASCADE,
+  owner_group_id INTEGER,
+  min_price INTEGER,
+  status TEXT NOT NULL DEFAULT 'OPEN',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Tabla exchange_proposals
+CREATE TABLE IF NOT EXISTS exchange_proposals (
+  id SERIAL PRIMARY KEY,
+  auction_id INTEGER NOT NULL REFERENCES property_auctions(id) ON DELETE CASCADE,
+  from_group_id INTEGER,
+  to_group_id INTEGER,
+  offering_schedule_id INTEGER REFERENCES property_schedules(id) ON DELETE SET NULL,
+  message TEXT,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_exchange_proposals_status
+    ON exchange_proposals (status);
 
 -- Asegurar columnas que agregamos evolutivamente si el contenedor reinicia contra una BD vieja
 DO $$
@@ -127,6 +173,14 @@ BEGIN
   ) THEN
     ALTER TABLE purchase_requests
       ADD COLUMN invoice_url TEXT NULL;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='purchase_requests' AND column_name='schedule_id'
+  ) THEN
+    ALTER TABLE purchase_requests
+      ADD COLUMN schedule_id INTEGER NULL;
   END IF;
 END$$;
 

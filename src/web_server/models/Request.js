@@ -57,6 +57,11 @@ const Request = sequelize.define('Request', {
     allowNull: true,
   },
 
+  schedule_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+
   // 🔥 NUEVO: URL pública del PDF de la boleta (/invoices/<id>.pdf)
   invoice_url: {
     type: DataTypes.TEXT,

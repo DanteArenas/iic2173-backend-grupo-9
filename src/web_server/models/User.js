@@ -24,6 +24,15 @@ const User = sequelize.define('User', {
         allowNull: false,
         unique: true,
     },
+    is_admin: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+    },
+    group_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+    },
 }, {
     tableName: 'users',
     underscored: true,

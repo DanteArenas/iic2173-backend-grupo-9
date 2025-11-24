@@ -16,9 +16,11 @@ const Request = require('../web_server/models/Request');
 const Property = require('../web_server/models/Property');
 const sequelize = require('../web_server/database');
 const EventLog = require('../web_server/models/EventLog');
+const { ensureDbSchemaUpgrades } = require('../web_server/services/schemaService');
 const client = require('./mqttClient');
 const { withFibonacciRetry } = require('./retry');
 
+const missingRequestWarnings = new Set();
 
 
 // =========================
@@ -28,6 +30,16 @@ const auth0IssuerBaseUrl = process.env.AUTH0_ISSUER_BASE_URL;
 const auth0Audience = process.env.AUTH0_AUDIENCE;
 const auth0ClientId = process.env.AUTH0_CLIENT_ID;
 const auth0ClientSecret = process.env.AUTH0_CLIENT_SECRET;
+
+(async () => {
+    try {
+        await sequelize.authenticate();
+        await ensureDbSchemaUpgrades(sequelize);
+        console.log('📦 Listener conectado a DB y esquema actualizado.');
+    } catch (err) {
+        console.error('❌ Listener no pudo preparar la base de datos:', err);
+    }
+})();
 
 const issuerWithTrailingSlash = auth0IssuerBaseUrl && auth0IssuerBaseUrl.endsWith('/')
     ? auth0IssuerBaseUrl
@@ -131,6 +143,7 @@ client.on('message', async (topic, message) => {
         let validation;
         let requestId;
         let status;
+        let relatedRequestId = null;
         try {
             validation = JSON.parse(message.toString());
             console.log('📩 Validación recibida:', validation);
@@ -141,6 +154,7 @@ client.on('message', async (topic, message) => {
 
             const request = await Request.findOne({ where: { request_id: requestId } });
             if (request) {
+                relatedRequestId = requestId;
                 await request.update({
                     status: status.toUpperCase(),
                     reason: Array.isArray(reason) 
@@ -166,8 +180,9 @@ client.on('message', async (topic, message) => {
                         console.log(`✅ Visita confirmada para propiedad ${request.property_url}`);
                     }
                 }
-            } else {
-                console.warn(`⚠️ Request ${requestId} no encontrado en DB`);
+            } else if (!missingRequestWarnings.has(requestId)) {
+                missingRequestWarnings.add(requestId);
+                console.warn(`⚠️ Request ${requestId} no encontrado en DB (probablemente pertenece a otro grupo o llegó sin request previo).`);
             }
         } catch (err) {
             console.error('❌ Error procesando validación:', err);
@@ -177,7 +192,7 @@ client.on('message', async (topic, message) => {
             await EventLog.create({
                 type: `VALIDATION_${status.toUpperCase()}`,
                 payload: validation,
-                related_request_id: requestId ?? null,
+                related_request_id: relatedRequestId || null,
             });
         }
     }
