@@ -76,6 +76,24 @@ Componer servicios es esencial para obtener entornos de prueba confiables, espec
 * **RNF2: (5p) ✅** Integrar su DB desde docker compose (Es decir la base de datos es un contenedor).
 * **RNF3: (5p) ✅** Lanzar su receptor MQTT desde docker compose y conectarlo al contenedor de la app web (o base de datos si lo usara).
 
+## Datos de prueba locales
+
+Si el broker MQTT no está entregando propiedades y necesitas poblar la base para pruebas manuales, ejecuta:
+
+```bash
+node scripts/seedProperties.js
+```
+
+El script usa las credenciales de `.env`, se conecta al Postgres del compose y crea/actualiza tres propiedades de ejemplo (Las Condes, Ñuñoa y Viña del Mar) con visitas disponibles y costos de reserva calculados.
+
+Para poblar la tabla `property_schedules` con bloques de visitas para estas propiedades:
+
+```bash
+node scripts/seedSchedules.js
+```
+
+Esto inserta dos horarios futuros por propiedad (con descuentos de prueba) para que las vistas `/properties/:id/schedules` y la administración puedan ejercitarse sin depender del broker.
+
 ## Variable
     
 Se implementaron los dos grupos de requisitos.
