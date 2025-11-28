@@ -30,12 +30,12 @@ const { Op } = require('sequelize');
 const Property = require('./models/Property');
 const User = require('./models/User');
 const Request = require('./models/Request');
-const Schedule = require('./models/Schedule');
-const Auction = require('./models/Auction');
-const ExchangeProposal = require('./models/ExchangeProposal');
+const { Auction, Schedule, ExchangeProposal } = require("./models");
+
 
 // Servicios internos
 const { publishValidation } = require('./services/publishValidation');
+const sendAuctionEvent = require('./listener/sendAuctionEvent');
 const sendPurchaseRequest = require('./listener/sendPurchaseRequest');
 const republishPurchaseRequest = require('./listener/republishPurchaseRequest');
 const { createTransaction, commitTransaction, mapWebpayStatus } = require('./services/webpayService');
@@ -56,7 +56,7 @@ const JOB_MASTER_URL = process.env.JOB_MASTER_URL || 'http://job-master:8080';
 const JOB_MASTER_TOKEN = process.env.JOB_MASTER_TOKEN;
 
 const WEBPAY_RETURN_URL = process.env.WEBPAY_RETURN_URL;
-
+const WEBPAY_RETURN_URL_USER = process.env.WEBPAY_RETURN_URL_USER;
 const FRONTEND_URL = process.env.FRONTEND_URL; // dominio deploy
 const PUBLIC_FRONTEND_URL = process.env.PUBLIC_FRONTEND_URL; // p.e. http://localhost:5173
 const FRONT = PUBLIC_FRONTEND_URL || FRONTEND_URL || 'http://localhost:5173';
@@ -139,7 +139,7 @@ const buildCorsOptions = () => {
     return {
       origin: '*',
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Authorization', 'Content-Type'],
+      allowHeaders: ['Authorization', 'Content-Type', 'x-group-id'],
       credentials: true,
     };
   }
@@ -162,7 +162,7 @@ const buildCorsOptions = () => {
       return undefined;
     },
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Authorization', 'Content-Type'],
+    allowHeaders: ['Authorization', 'Content-Type', 'x-group-id'],
     credentials: true,
   };
 };
@@ -453,9 +453,8 @@ router.get('/properties/:id/schedules', async (ctx) => {
   const schedules = await Schedule.findAll({
     where: {
       property_url: property.data.url,
-      status: { [Op.in]: ['AVAILABLE', 'AUCTION'] },
+      status: { [Op.in]: ['AVAILABLE', 'AUCTION', 'OWNED'] },
     },
-    order: [['starts_at', 'ASC']],
   });
   ctx.body = schedules.map((s) => {
     const plain = s.toJSON();
@@ -463,73 +462,8 @@ router.get('/properties/:id/schedules', async (ctx) => {
   });
 });
 
-router.post(
-  '/admin/properties/:id/schedules',
-  requireAuth,
-  requireAdmin,
-  async (ctx) => {
-    const propertyId = parseInt(ctx.params.id, 10);
-    if (Number.isNaN(propertyId) || propertyId < 1) {
-      ctx.status = 400;
-      ctx.body = { error: 'Invalid property ID' };
-      return;
-    }
-    const property = await Property.findByPk(propertyId);
-    if (!property || !property.data || !property.data.url) {
-      ctx.status = 404;
-      ctx.body = { error: 'Property not found' };
-      return;
-    }
-
-    const { starts_at, ends_at, price_clp, discount_pct = 0 } =
-      ctx.request.body || {};
-
-    const startDate = new Date(starts_at);
-    const endDate = new Date(ends_at);
-    if (!starts_at || !ends_at || Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
-      ctx.status = 400;
-      ctx.body = { error: 'starts_at and ends_at must be valid ISO datetimes' };
-      return;
-    }
-    if (endDate <= startDate) {
-      ctx.status = 400;
-      ctx.body = { error: 'ends_at must be after starts_at' };
-      return;
-    }
-
-    const priceVal = Number(price_clp);
-    if (!Number.isFinite(priceVal) || priceVal <= 0) {
-      ctx.status = 400;
-      ctx.body = { error: 'price_clp must be a positive number' };
-      return;
-    }
-    const discountVal = Number(discount_pct);
-    if (!Number.isFinite(discountVal) || discountVal < 0 || discountVal > 10) {
-      ctx.status = 400;
-      ctx.body = { error: 'discount_pct must be between 0 and 10' };
-      return;
-    }
-
-    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
-    const schedule = await Schedule.create({
-      property_url: property.data.url,
-      starts_at: startDate,
-      ends_at: endDate,
-      price_clp: Math.round(priceVal),
-      discount_pct: Math.round(discountVal),
-      status: 'AVAILABLE',
-      created_by: adminUser.id,
-      owner_group_id: getGroupId(adminUser),
-      created_at: new Date(),
-      updated_at: new Date(),
-    });
-    ctx.status = 201;
-    ctx.body = { schedule: schedule.toJSON(), final_price_clp: scheduleFinalPrice(schedule) };
-  }
-);
-
-router.post(
-  '/admin/schedules/:id/purchase',
+router.patch(
+  '/admin/schedules/:id',
   requireAuth,
   requireAdmin,
   async (ctx) => {
@@ -539,60 +473,283 @@ router.post(
       ctx.body = { error: 'Invalid schedule ID' };
       return;
     }
+
     const schedule = await Schedule.findByPk(scheduleId);
     if (!schedule) {
       ctx.status = 404;
       ctx.body = { error: 'Schedule not found' };
       return;
     }
+
+    const adminUser = ctx.state.dbUser ||
+      (await getOrCreateUserFromToken(ctx.state.user || {}));
+    const myGroup = getGroupId(adminUser);
+
+    if (schedule.owner_group_id !== myGroup) {
+      ctx.status = 403;
+      ctx.body = { 
+        error: 'Forbidden',
+        message: 'You can only edit schedules owned by your group' 
+      };
+      return;
+    }
+
+    const { discount_pct, status } = ctx.request.body || {};
+
+    const updates = {};
+
+    if (discount_pct !== undefined) {
+      const discount = Number(discount_pct);
+      if (!Number.isFinite(discount) || discount < 0 || discount > 10) {
+        ctx.status = 400;
+        ctx.body = { error: 'discount_pct must be between 0 and 10%' };
+        return;
+      }
+      updates.discount_pct = Math.round(discount);
+    }
+
+    if (status !== undefined) {
+      const upper = String(status).toUpperCase();
+      if (!['AVAILABLE', 'OWNED', 'SOLD'].includes(upper)) {
+        ctx.status = 400;
+        ctx.body = { error: 'Invalid status' };
+        return;
+      }
+      updates.status = upper;
+    }
+
+    await schedule.update({ 
+      ...updates,
+      updated_at: new Date(),
+    });
+
+    ctx.body = {
+      message: 'Schedule updated successfully',
+      schedule: schedule.toJSON(),
+      final_price_clp: scheduleFinalPrice(schedule),
+    };
+  }
+);
+
+
+// POST /schedules/:id/purchase
+router.post(
+  '/schedules/:id/purchase',
+  requireAuth,   // usuario normal
+  async (ctx) => {
+    console.log("WEBPAY_RETURN_URL_USER:", WEBPAY_RETURN_URL_USER);
+    const scheduleId = parseInt(ctx.params.id, 10);
+    if (Number.isNaN(scheduleId) || scheduleId < 1) {
+      ctx.status = 400;
+      ctx.body = { error: 'Invalid schedule ID' };
+      return;
+    }
+
+    const schedule = await Schedule.findByPk(scheduleId);
+    if (!schedule) {
+      ctx.status = 404;
+      ctx.body = { error: 'Schedule not found' };
+      return;
+    }
+
     const status = String(schedule.status || '').toUpperCase();
-    if (!['AVAILABLE', 'AUCTION'].includes(status)) {
+    if (status !== 'AVAILABLE') {
       ctx.status = 409;
       ctx.body = { error: 'Schedule not available for purchase' };
       return;
     }
 
-    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
-    const groupId = getGroupId(adminUser);
+    const user = ctx.state.dbUser || await getOrCreateUserFromToken(ctx.state.user);
     const finalPrice = scheduleFinalPrice(schedule);
+
     if (!Number.isFinite(finalPrice) || finalPrice <= 0) {
       ctx.status = 400;
       ctx.body = { error: 'Invalid schedule price' };
       return;
     }
 
-    const now = new Date();
-    await schedule.update({
-      status: 'SOLD',
-      owner_group_id: groupId,
-      updated_at: now,
-    });
-
+    // 1) Crear Request USER_PURCHASE
     const requestId = uuidv4();
-    const buyOrder = `ADM-${requestId.replace(/-/g, '').slice(0, 22)}`;
-    const purchase = await Request.create({
+    const buyOrder = requestId.replace(/-/g, '').slice(0, 20);
+
+    const requestRow = await Request.create({
       request_id: requestId,
       buy_order: buyOrder,
-      user_id: adminUser.id,
+      user_id: user.id,
       property_url: schedule.property_url,
+      schedule_id: schedule.id,
       amount_clp: finalPrice,
-      status: 'ACCEPTED',
-      reason: 'Admin purchase for group',
+      status: 'PENDING',
+      reason: 'User purchase of schedule',
       retry_used: false,
       deposit_token: null,
-      invoice_url: null,
-      schedule_id: schedule.id,
-      created_at: now,
-      updated_at: now,
+      invoice_url: null
+    });
+    console.log('returnurl:', WEBPAY_RETURN_URL_USER);
+    // 2) Crear transacción Webpay
+    const init = await createTransaction(
+      buyOrder,
+      user.id.toString(),
+      finalPrice,
+      WEBPAY_RETURN_URL_USER
+    );
+
+    // Guardamos token en request
+    await requestRow.update({
+      deposit_token: init.token
     });
 
     ctx.body = {
-      message: 'Schedule purchased for admin group',
-      schedule: schedule.toJSON(),
-      purchase: purchase.toJSON(),
+      url: init.url,
+      token: init.token,
+      request_id: requestId
     };
   }
 );
+
+router.post(
+  '/payments/webpay/return-user',
+  koaBody({ urlencoded: true, json: false }),
+  async (ctx) => {
+    const token = ctx.request.body?.token_ws;
+    if (!token) {
+      ctx.status = 400;
+      ctx.body = 'Missing token_ws';
+      return;
+    }
+
+    // 1) Confirmar en Webpay
+    const result = await commitTransaction(token);
+    const mapped = mapWebpayStatus(result);
+
+    const t = await sequelize.transaction();
+    let requestRow = null;
+
+    try {
+      requestRow = await Request.findOne({
+        where: { deposit_token: token },
+        lock: t.LOCK.UPDATE,
+        transaction: t
+      });
+
+      if (!requestRow) {
+        await t.rollback();
+        ctx.status = 404;
+        ctx.body = 'Request not found';
+        return;
+      }
+
+      // 2) Actualizar request
+      await requestRow.update(
+        {
+          status: mapped,
+          reason: result.response_code === 0 ? 'Payment approved' : 'Payment failed',
+          updated_at: new Date()
+        },
+        { transaction: t }
+      );
+
+      // 3) Si ACCEPTED → transferir schedule al usuario
+      if (mapped === 'ACCEPTED') {
+        await ensureInvoiceForRequestRow(requestRow)
+        const schedule = await Schedule.findByPk(requestRow.schedule_id);
+
+        await schedule.update(
+          {
+            status: 'SOLD',
+            owner_group_id: requestRow.user_id, // o getGroupId
+            updated_at: new Date()
+          },
+          { transaction: t }
+        );
+      }
+
+      await t.commit();
+
+    } catch (e) {
+      try { await t.rollback(); } catch {}
+      console.error('Return-user error:', e);
+      ctx.status = 500;
+      ctx.body = 'Internal error';
+      return;
+    }
+
+    // 4) Redirigir al front
+    const statusParam = mapped === 'ACCEPTED' ? 'ok' : 'failed';
+    ctx.status = 302;
+    ctx.redirect(`${FRONT}/reservations/${requestRow.request_id}?status=${statusParam}`);
+  }
+);
+
+router.get('/payments/webpay/return-user', async (ctx) => {
+  const { token_ws, TBK_TOKEN, TBK_ORDEN_COMPRA } = ctx.query;
+
+  // Igual que en retorno normal
+  if (!token_ws) {
+    ctx.status = 400;
+    ctx.body = 'Missing token_ws';
+    return;
+  }
+
+  // Confirmación idempotente en Webpay
+  const result = await commitTransaction(token_ws);
+  const mapped = mapWebpayStatus(result);
+
+  const t = await sequelize.transaction();
+  let requestRow = null;
+
+  try {
+    requestRow = await Request.findOne({
+      where: { deposit_token: token_ws },
+      lock: t.LOCK.UPDATE,
+      transaction: t
+    });
+
+    if (!requestRow) {
+      await t.rollback();
+      ctx.status = 404;
+      ctx.body = 'Request not found';
+      return;
+    }
+
+
+    // Actualizar estado
+    await requestRow.update(
+      {
+        status: mapped,
+        reason: result.response_code === 0 ? 'Payment approved (GET)' : 'Payment failed (GET)',
+        updated_at: new Date()
+      },
+      { transaction: t }
+    );
+    
+    // Transferencia del schedule
+    if (mapped === 'ACCEPTED') {
+      await ensureInvoiceForRequestRow(requestRow)
+      const schedule = await Schedule.findByPk(requestRow.schedule_id);
+
+      await schedule.update(
+        {
+          status: 'SOLD',
+          owner_group_id: requestRow.user_id,
+          updated_at: new Date()
+        },
+        { transaction: t }
+      );
+    }
+
+    await t.commit();
+
+    const statusParam = mapped === 'ACCEPTED' ? 'ok' : 'failed';
+    ctx.status = 302;
+    ctx.redirect(`${FRONT}/reservations/${requestRow.request_id}?status=${statusParam}`);
+  } catch (e) {
+    try { await t.rollback(); } catch {}
+    console.error('GET return-user error:', e);
+    ctx.status = 500;
+    ctx.body = 'Internal error';
+  }
+});
 
 router.post(
   '/admin/schedules/:id/auction',
@@ -600,52 +757,62 @@ router.post(
   requireAdmin,
   async (ctx) => {
     const scheduleId = parseInt(ctx.params.id, 10);
-    if (Number.isNaN(scheduleId) || scheduleId < 1) {
-      ctx.status = 400;
-      ctx.body = { error: 'Invalid schedule ID' };
-      return;
-    }
+    if (Number.isNaN(scheduleId)) return ctx.throw(400, 'Invalid schedule ID');
+
     const schedule = await Schedule.findByPk(scheduleId);
-    if (!schedule) {
-      ctx.status = 404;
-      ctx.body = { error: 'Schedule not found' };
-      return;
-    }
+    if (!schedule) return ctx.throw(404, 'Schedule not found');
 
-    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
-    const groupId = getGroupId(adminUser);
-    if (!groupId || schedule.owner_group_id !== groupId) {
-      ctx.status = 403;
-      ctx.body = { error: 'Forbidden', message: 'Schedule not owned by your group' };
-      return;
-    }
-    if (String(schedule.status || '').toUpperCase() === 'AUCTION') {
-      ctx.status = 409;
-      ctx.body = { error: 'Schedule is already under auction' };
-      return;
-    }
-    if (String(schedule.status || '').toUpperCase() !== 'SOLD') {
-      ctx.status = 400;
-      ctx.body = { error: 'Only purchased schedules can be auctioned' };
-      return;
-    }
+    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user));
+    const myGroup = getGroupId(adminUser);
 
-    const minPrice = Number(ctx.request.body?.min_price);
+    if (schedule.owner_group_id !== myGroup)
+      return ctx.throw(403, 'Forbidden');
+
+    const status = schedule.status.toUpperCase();
+    if (!['OWNED', 'AVAILABLE'].includes(status))
+      return ctx.throw(400, 'Schedule must be OWNED or AVAILABLE to auction');
+
     const now = new Date();
+    const auctionUuid = uuidv4();
+
+    const minPriceBody = Number(ctx.request.body?.min_price);
+    const minPrice =
+      Number.isFinite(minPriceBody) && minPriceBody > 0
+        ? Math.round(minPriceBody)
+        : scheduleFinalPrice(schedule);
+
+    // 1) Crear la subasta en tu BD
     const auction = await Auction.create({
       schedule_id: schedule.id,
-      owner_group_id: groupId,
-      min_price: Number.isFinite(minPrice) && minPrice > 0 ? Math.round(minPrice) : scheduleFinalPrice(schedule),
-      status: 'OPEN',
+      owner_group_id: myGroup,
+      min_price: minPrice,
+      status: "OPEN",
+      auction_uuid: auctionUuid,
       created_at: now,
       updated_at: now,
     });
-    await schedule.update({ status: 'AUCTION', updated_at: now });
+
+    // 2) Actualizar el schedule a AUCTION
+    await schedule.update({ status: "AUCTION", updated_at: now });
+
+    // 3) Enviar el evento de OFFER al broker
+    const event = {
+      auction_id: auctionUuid,
+      proposal_id: "",
+      url: schedule.property_url,
+      timestamp: now.toISOString(),
+      quantity: 1,
+      group_id: myGroup,
+      operation: "offer",
+    };
+
+    await sendAuctionEvent(event);
 
     ctx.status = 201;
-    ctx.body = { auction: auction.toJSON(), schedule: schedule.toJSON() };
+    ctx.body = { auction, schedule };
   }
 );
+
 
 router.post(
   '/admin/auctions/:id/proposals',
@@ -653,68 +820,62 @@ router.post(
   requireAdmin,
   async (ctx) => {
     const auctionId = parseInt(ctx.params.id, 10);
-    if (Number.isNaN(auctionId) || auctionId < 1) {
-      ctx.status = 400;
-      ctx.body = { error: 'Invalid auction ID' };
-      return;
-    }
-    const auction = await Auction.findByPk(auctionId);
-    if (!auction) {
-      ctx.status = 404;
-      ctx.body = { error: 'Auction not found' };
-      return;
-    }
-    if (String(auction.status || '').toUpperCase() !== 'OPEN') {
-      ctx.status = 409;
-      ctx.body = { error: 'Auction is not open' };
-      return;
-    }
+    if (Number.isNaN(auctionId)) return ctx.throw(400, 'Invalid auction ID');
 
-    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
+    const auction = await Auction.findByPk(auctionId);
+    if (!auction) return ctx.throw(404, 'Auction not found');
+
+    if (auction.status !== 'OPEN') return ctx.throw(409, 'Auction not open');
+
+    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user));
     const fromGroup = getGroupId(adminUser);
     const toGroup = auction.owner_group_id;
-    if (!fromGroup || !toGroup) {
-      ctx.status = 400;
-      ctx.body = { error: 'Group information missing for proposal' };
-      return;
-    }
-    if (fromGroup === toGroup) {
-      ctx.status = 400;
-      ctx.body = { error: 'Cannot propose exchange to your own group' };
-      return;
-    }
+
+    if (fromGroup === toGroup)
+      return ctx.throw(400, 'Cannot propose to your own auction');
 
     const { offering_schedule_id, message } = ctx.request.body || {};
-    let offeringScheduleId = null;
+
+    let offeringSchedule = null;
     if (offering_schedule_id) {
-      const offer = await Schedule.findByPk(offering_schedule_id);
-      if (!offer) {
-        ctx.status = 404;
-        ctx.body = { error: 'Offering schedule not found' };
-        return;
-      }
-      if (offer.owner_group_id !== fromGroup) {
-        ctx.status = 403;
-        ctx.body = { error: 'You can only offer schedules owned by your group' };
-        return;
-      }
-      offeringScheduleId = offer.id;
+      offeringSchedule = await Schedule.findByPk(offering_schedule_id);
+      if (!offeringSchedule) return ctx.throw(404, 'Offering schedule not found');
+
+      if (offeringSchedule.owner_group_id !== fromGroup)
+        return ctx.throw(403, 'You can only offer schedules you own');
     }
 
     const now = new Date();
+    const proposalUuid = uuidv4();
+
     const proposal = await ExchangeProposal.create({
       auction_id: auction.id,
+      auction_uuid: auction.auction_uuid,
+      proposal_uuid: proposalUuid,
       from_group_id: fromGroup,
       to_group_id: toGroup,
-      offering_schedule_id: offeringScheduleId,
+      offering_schedule_id: offeringSchedule ? offeringSchedule.id : null,
       message: message || null,
       status: 'PENDING',
       created_at: now,
       updated_at: now,
     });
 
+    // Enviar evento PROPOSAL al broker
+    const event = {
+      auction_id: auction.auction_uuid,
+      proposal_id: proposalUuid,
+      url: offeringSchedule ? offeringSchedule.property_url : "",
+      timestamp: now.toISOString(),
+      quantity: 1,
+      group_id: fromGroup,
+      operation: "proposal",
+    };
+
+    await sendAuctionEvent(event);
+
     ctx.status = 201;
-    ctx.body = { proposal: proposal.toJSON() };
+    ctx.body = { proposal };
   }
 );
 
@@ -724,46 +885,36 @@ router.post(
   requireAdmin,
   async (ctx) => {
     const proposalId = parseInt(ctx.params.id, 10);
-    if (Number.isNaN(proposalId) || proposalId < 1) {
-      ctx.status = 400;
-      ctx.body = { error: 'Invalid proposal ID' };
-      return;
-    }
-    const proposal = await ExchangeProposal.findByPk(proposalId);
-    if (!proposal) {
-      ctx.status = 404;
-      ctx.body = { error: 'Proposal not found' };
-      return;
-    }
-    if (String(proposal.status || '').toUpperCase() !== 'PENDING') {
-      ctx.status = 409;
-      ctx.body = { error: 'Proposal already resolved' };
-      return;
-    }
+    if (Number.isNaN(proposalId)) return ctx.throw(400, 'Invalid proposal ID');
 
-    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
+    const proposal = await ExchangeProposal.findByPk(proposalId);
+    if (!proposal) return ctx.throw(404, 'Proposal not found');
+
+    if (proposal.status !== 'PENDING')
+      return ctx.throw(409, 'Proposal already resolved');
+
+    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user));
     const myGroup = getGroupId(adminUser);
-    if (!myGroup || proposal.to_group_id !== myGroup) {
-      ctx.status = 403;
-      ctx.body = { error: 'Forbidden', message: 'Proposal not addressed to your group' };
-      return;
-    }
+
+    if (proposal.to_group_id !== myGroup)
+      return ctx.throw(403, 'Proposal not addressed to you');
 
     const auction = await Auction.findByPk(proposal.auction_id);
-    const schedule = auction ? await Schedule.findByPk(auction.schedule_id) : null;
+    const schedule = await Schedule.findByPk(auction.schedule_id);
+
     const now = new Date();
 
     await proposal.update({ status: 'ACCEPTED', updated_at: now });
-    if (auction && auction.status !== 'CLOSED') {
-      await auction.update({ status: 'CLOSED', updated_at: now });
-    }
-    if (schedule) {
-      await schedule.update({
-        owner_group_id: proposal.from_group_id || schedule.owner_group_id,
-        status: 'SOLD',
-        updated_at: now,
-      });
-    }
+    await auction.update({ status: 'CLOSED', updated_at: now });
+
+    // Cambiar propiedad del scheduling
+    await schedule.update({
+      owner_group_id: proposal.from_group_id,
+      status: 'OWNED',
+      updated_at: now,
+    });
+
+    // Si había schedule ofrecido, intercambiar
     if (proposal.offering_schedule_id) {
       const offer = await Schedule.findByPk(proposal.offering_schedule_id);
       if (offer) {
@@ -771,10 +922,23 @@ router.post(
       }
     }
 
+    // 🔥 Evento ACCEPT
+    const event = {
+      auction_id: auction.auction_uuid,
+      proposal_id: proposal.proposal_uuid,
+      url: schedule.property_url,
+      timestamp: now.toISOString(),
+      quantity: 1,
+      group_id: myGroup,
+      operation: "acceptance",
+    };
+
+    await sendAuctionEvent(event);
+
     ctx.body = {
       message: 'Proposal accepted',
-      proposal: proposal.toJSON(),
-      auction: auction ? auction.toJSON() : null,
+      proposal,
+      auction,
     };
   }
 );
@@ -785,36 +949,126 @@ router.post(
   requireAdmin,
   async (ctx) => {
     const proposalId = parseInt(ctx.params.id, 10);
-    if (Number.isNaN(proposalId) || proposalId < 1) {
-      ctx.status = 400;
-      ctx.body = { error: 'Invalid proposal ID' };
-      return;
-    }
+    if (Number.isNaN(proposalId)) return ctx.throw(400, 'Invalid proposal ID');
+
     const proposal = await ExchangeProposal.findByPk(proposalId);
-    if (!proposal) {
-      ctx.status = 404;
-      ctx.body = { error: 'Proposal not found' };
-      return;
-    }
-    if (String(proposal.status || '').toUpperCase() !== 'PENDING') {
-      ctx.status = 409;
-      ctx.body = { error: 'Proposal already resolved' };
-      return;
-    }
+    if (!proposal) return ctx.throw(404, 'Proposal not found');
 
-    const adminUser = ctx.state.dbUser || (await getOrCreateUserFromToken(ctx.state.user || {}));
+    if (proposal.status !== 'PENDING')
+      return ctx.throw(409, 'Proposal already resolved');
+
+    const adminUser = ctx.state.dbUser ||
+      (await getOrCreateUserFromToken(ctx.state.user));
     const myGroup = getGroupId(adminUser);
-    if (!myGroup || proposal.to_group_id !== myGroup) {
-      ctx.status = 403;
-      ctx.body = { error: 'Forbidden', message: 'Proposal not addressed to your group' };
-      return;
-    }
 
-    await proposal.update({ status: 'REJECTED', updated_at: new Date() });
-    ctx.body = { message: 'Proposal rejected', proposal: proposal.toJSON() };
+    if (proposal.to_group_id !== myGroup)
+      return ctx.throw(403, 'Proposal not addressed to you');
+
+    const now = new Date();
+
+    await proposal.update({ status: 'REJECTED', updated_at: now });
+
+    // 🔥 Evento REJECTION
+    const event = {
+      auction_id: proposal.auction_uuid,
+      proposal_id: proposal.proposal_uuid,
+      url: "",
+      timestamp: now.toISOString(),
+      quantity: 1,
+      group_id: myGroup,
+      operation: "rejection",
+    };
+
+    await sendAuctionEvent(event);
+
+    ctx.body = {
+      message: 'Proposal rejected',
+      proposal,
+    };
   }
 );
 
+router.get(
+  '/admin/auctions',
+  requireAuth,
+  requireAdmin,
+  async (ctx) => {
+    const adminUser = ctx.state.dbUser ||
+      (await getOrCreateUserFromToken(ctx.state.user));
+    const myGroup = getGroupId(adminUser);
+
+    const auctions = await Auction.findAll({
+      where: { owner_group_id: myGroup },
+      include: [
+        {
+          model: Schedule,
+          as: 'schedule',
+        }
+      ],
+      order: [['created_at', 'DESC']],
+    });
+
+    ctx.body = {
+      auctions,
+    };
+  }
+);
+
+router.get(
+  '/admin/proposals',
+  requireAuth,
+  requireAdmin,
+  async (ctx) => {
+    const adminUser = ctx.state.dbUser ||
+      (await getOrCreateUserFromToken(ctx.state.user));
+    const myGroup = getGroupId(adminUser);
+
+    const proposals = await ExchangeProposal.findAll({
+      where: {
+        to_group_id: myGroup,  // propuestas dirigidas a mí
+      },
+      include: [
+        {
+          model: Auction,
+          as: 'auction',
+          include: [{ model: Schedule, as: 'schedule' }]
+        },
+        {
+          model: Schedule,
+          as: 'offering_schedule'
+        }
+      ],
+      order: [['created_at', 'DESC']]
+    });
+
+    ctx.body = { proposals };
+  }
+);
+
+router.get("/admin/schedules/mine", requireAuth,requireAdmin, async (ctx) => {
+  try {
+    const groupIdHeader = ctx.request.headers["x-group-id"];
+
+    const groupId = Number(groupIdHeader);
+
+    if (!groupId || isNaN(groupId)) {
+      ctx.status = 400;
+      ctx.body = { error: "Invalid or missing group_id" };
+      return;
+    }
+
+    const schedules = await Schedule.findAll({
+      where: { owner_group_id: groupId },
+    });
+
+    ctx.status = 200;
+    ctx.body = { schedules };
+  } catch (err) {
+    console.error("Error GET /schedules/mine:", err);
+    ctx.status = 500;
+    ctx.body = { error: "Internal server error", details: err.message };
+  }
+});
 // -------- PUBLIC
 router.get('/workers/heartbeat', async (ctx) => {
   const t0 = Date.now();
@@ -1168,7 +1422,7 @@ router.get('/properties/:id', async (ctx) => {
 });
 
 // ---- BUY (Webpay)
-router.post('/properties/buy', requireAuth, async (ctx) => {
+router.post('/properties/buy', requireAuth, requireAdmin, async (ctx) => {
   const { url } = ctx.request.body;
 
   if (!url || typeof url !== 'string' || url.trim() === '') {
@@ -1359,6 +1613,30 @@ router.post('/properties/buy', requireAuth, async (ctx) => {
       );
       await transaction.rollback();
     }
+    try {
+  // Buscar la request que podría haber quedado en PENDING
+  const reqRow = await Request.findOne({ where: { request_id: requestId } });
+
+  if (reqRow && reqRow.status === 'PENDING') {
+    await reqRow.update({
+      status: 'REJECTED',
+      reason: 'Internal Webpay error',
+      updated_at: new Date()
+    });
+
+    // Restaurar visita
+    const prop = await Property.findOne({
+          where: sequelize.where(sequelize.json('data.url'), cleanUrl)
+        });
+
+        if (prop) {
+          await prop.increment('visits');
+          console.log(`✔️ Restored visit for property ${cleanUrl}`);
+        }
+      }
+    } catch (e2) {
+      console.error('❌ Error while cleaning failed transaction:', e2.message);
+    }
 
     console.error(
       `❌ Critical Error in /properties/buy for request ${requestId}:`,
@@ -1384,11 +1662,16 @@ router.post('/properties/buy', requireAuth, async (ctx) => {
 router.get('/reservations', requireAuth, async (ctx) => {
   let user;
   try {
-    user = await getOrCreateUserFromToken(ctx.state.user || {});
+      if (!ctx.state.user) {
+        ctx.status = 401;
+        ctx.body = { error: "No auth token found" };
+        return;
+      }
+      user = await getOrCreateUserFromToken(ctx.state.user);
   } catch (err) {
     ctx.status = 400;
     ctx.body = {
-      error: 'Invalid token payload or failed to retrieve user',
+      error: `Invalid token payload or failed to retrieve user ${ctx.state.user || {}}`,
       message: err.message,
     };
     return;
@@ -1422,7 +1705,7 @@ router.get('/reservations', requireAuth, async (ctx) => {
 });
 
 // ---- RESERVATION DETAIL
-router.get('/reservations/:request_id', requireAuth, async (ctx) => {
+router.get('/reservations/:request_id', requireAuth,async (ctx) => {
   const { request_id } = ctx.params;
   if (!request_id || !uuidValidate(request_id)) {
     ctx.status = 400;
@@ -1644,6 +1927,8 @@ router.post(
   koaBody({ urlencoded: true, json: false, multipart: false }),
   async (ctx) => {
     try {
+      console.log("🔥 ENTRE A POST RETURN");
+
       const token = ctx.request.body?.token_ws;
       if (!token) {
         ctx.status = 400;
@@ -1655,16 +1940,17 @@ router.post(
       const result = await commitTransaction(token);
       const mapped = mapWebpayStatus(result);
 
-      // 2) Actualizar DB (y restaurar visits si corresponde)
+      // 2) Actualizar DB
       const t = await sequelize.transaction();
       let requestRow = null;
+
       try {
         requestRow = await Request.findOne({
           where: { deposit_token: token },
           lock: t.LOCK.UPDATE,
           transaction: t
         });
-
+        console.log('🔔 POST /payments/webpay/return: Found requestRow: AAAA', requestRow);
         if (requestRow) {
           const reason = (result && result.response_code === 0)
             ? 'Webpay payment approved'
@@ -1674,8 +1960,32 @@ router.post(
             { status: mapped, reason, updated_at: new Date() },
             { transaction: t }
           );
-
-          //se borro el devolver la visita ya que se hace en MQTT_suscriber y se duplicaba
+          console.log('🔔 POST /payments/webpay/return: Found requestRow:', requestRow.status);
+          // ==================================================
+          // 3) CREAR SCHEDULE SI PAGO ES ACCEPTED
+          //    NO revisamos admin porque esta ruta solo
+          //    ocurre si /properties/buy ya estaba protegido
+          // ==================================================
+          console.log(`🔔 Processing post-payment for request ${requestRow.request_id} with status ${mapped}`);
+          if (mapped === 'ACCEPTED') {
+            console.log(`✅ Payment ACCEPTED for request ${requestRow.request_id}. Checking/creating PropertySchedule...`);
+            console.log("requestRow", requestRow);
+            console.log("user_id", requestRow.user_id);
+            await Schedule.create(
+              {
+                property_url: requestRow.property_url,
+                price_clp: requestRow.amount_clp,
+                discount_pct: 0,
+                status: 'OWNED',  // inventario del admin
+                created_by: requestRow.user_id,
+                owner_group_id: 9 // o el grupo si lo manejas
+              },
+              { transaction: t }
+            );
+            console.log(
+              `🟢 Schedule creado para propiedad ${requestRow.property_url}`
+            );
+          }
         } else {
           console.error(`POST /payments/webpay/return: No request found for token ${token}`);
         }
@@ -1686,12 +1996,12 @@ router.post(
         throw e;
       }
 
-      // 3) Generar boleta con Lambda si fue ACCEPTED
+      // 4) Generar boleta si ACCEPTED
       if (requestRow) {
         await ensureInvoiceForRequestRow(requestRow);
       }
 
-      // 4) PUBLICAR VALIDACIÓN POR MQTT
+      // 5) Enviar validación vía MQTT
       if (requestRow) {
         try {
           await publishValidation({
@@ -1705,11 +2015,11 @@ router.post(
             timestamp: new Date().toISOString()
           });
         } catch (pubErr) {
-          console.error('MQTT publishValidation failed (POST /payments/webpay/return):', pubErr.message);
+          console.error('MQTT publishValidation failed:', pubErr.message);
         }
       }
 
-      // 5) Redirigir al front
+      // 6) Redirigir al front
       const requestId = requestRow ? requestRow.request_id : 'unknown';
       const statusParam = (mapped === 'ACCEPTED') ? 'ok' : 'failed';
       const url = `${FRONT}/reservations/${requestId}?status=${statusParam}`;
@@ -1725,6 +2035,7 @@ router.post(
   }
 );
 
+
 // GET /payments/webpay/return - cancel/timeout o fallback con token_ws
 router.get('/payments/webpay/return', async (ctx) => {
   const { token_ws, TBK_TOKEN, TBK_ORDEN_COMPRA } = ctx.query;
@@ -1732,6 +2043,7 @@ router.get('/payments/webpay/return', async (ctx) => {
     'PAYMENT RETURN (GET): Received query params:',
     ctx.query
   );
+  console.log("🔥 ENTRE A GET RETURN");
 
   const redirectBase = `${FRONT}/reservations`;
 
@@ -1774,6 +2086,24 @@ router.get('/payments/webpay/return', async (ctx) => {
                 },
                 { transaction: t }
               );
+              // === CREAR SCHEDULE SI EL PAGO FUE ACCEPTED ===
+              if (mapped === 'ACCEPTED') {
+                console.log(`🔧 GET fallback: creating schedule for property ${reqRow.property_url}`);
+
+                await Schedule.create(
+                  {
+                    property_url: reqRow.property_url,
+                    price_clp: reqRow.amount_clp,
+                    discount_pct: 0,
+                    status: 'OWNED',  // inventario del admin
+                    created_by: reqRow.user_id,
+                    owner_group_id: 9
+                  },
+                  { transaction: t }
+                );
+
+                console.log(`🟢 GET fallback: schedule created for ${reqRow.property_url}`);
+              }
 
               // restaurar visitas si fue REJECTED/ERROR
               if (

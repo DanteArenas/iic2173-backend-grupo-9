@@ -30,8 +30,6 @@ const ensureDbSchemaUpgrades = async (sequelize) => {
       `CREATE TABLE IF NOT EXISTS property_schedules (
          id SERIAL PRIMARY KEY,
          property_url TEXT NOT NULL,
-         starts_at TIMESTAMPTZ NOT NULL,
-         ends_at TIMESTAMPTZ NOT NULL,
          price_clp INTEGER NOT NULL,
          discount_pct INTEGER NOT NULL DEFAULT 0,
          status TEXT NOT NULL DEFAULT 'AVAILABLE',

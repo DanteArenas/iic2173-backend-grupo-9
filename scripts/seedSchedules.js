@@ -25,16 +25,12 @@ const schedulePayloads = [
   // Las Condes
   {
     property_url: 'https://demo.propertiesmarket.tech/property/las-condes-smartloft',
-    starts_at: '2025-09-01T15:00:00.000Z',
-    ends_at: '2025-09-01T16:00:00.000Z',
     price_clp: 12500000,
     discount_pct: 0,
     status: 'AVAILABLE',
   },
   {
     property_url: 'https://demo.propertiesmarket.tech/property/las-condes-smartloft',
-    starts_at: '2025-09-03T18:30:00.000Z',
-    ends_at: '2025-09-03T19:30:00.000Z',
     price_clp: 12500000,
     discount_pct: 5,
     status: 'AVAILABLE',
@@ -42,16 +38,12 @@ const schedulePayloads = [
   // Ñuñoa
   {
     property_url: 'https://demo.propertiesmarket.tech/property/nunoa-family-house',
-    starts_at: '2025-09-02T17:00:00.000Z',
-    ends_at: '2025-09-02T18:00:00.000Z',
     price_clp: 17850000,
     discount_pct: 0,
     status: 'AVAILABLE',
   },
   {
     property_url: 'https://demo.propertiesmarket.tech/property/nunoa-family-house',
-    starts_at: '2025-09-04T13:00:00.000Z',
-    ends_at: '2025-09-04T14:30:00.000Z',
     price_clp: 17850000,
     discount_pct: 10,
     status: 'AVAILABLE',
@@ -59,16 +51,12 @@ const schedulePayloads = [
   // Viña del Mar
   {
     property_url: 'https://demo.propertiesmarket.tech/property/vina-del-mar-bayview',
-    starts_at: '2025-09-01T20:00:00.000Z',
-    ends_at: '2025-09-01T21:00:00.000Z',
     price_clp: 9290000,
     discount_pct: 0,
     status: 'AVAILABLE',
   },
   {
     property_url: 'https://demo.propertiesmarket.tech/property/vina-del-mar-bayview',
-    starts_at: '2025-09-03T12:00:00.000Z',
-    ends_at: '2025-09-03T13:00:00.000Z',
     price_clp: 9290000,
     discount_pct: 0,
     status: 'AVAILABLE',
@@ -83,28 +71,24 @@ async function seed() {
     const existing = await Schedule.findOne({
       where: {
         property_url: payload.property_url,
-        starts_at: new Date(payload.starts_at),
       },
     });
 
     if (existing) {
       await existing.update({
-        ends_at: new Date(payload.ends_at),
         price_clp: payload.price_clp,
         discount_pct: payload.discount_pct,
         status: payload.status,
         updated_at: new Date(),
       });
-      console.log(`♻️ Schedule actualizado para ${payload.property_url} (${payload.starts_at})`);
+      console.log(`♻️ Schedule actualizado para ${payload.property_url}`);
     } else {
       await Schedule.create({
         ...payload,
-        starts_at: new Date(payload.starts_at),
-        ends_at: new Date(payload.ends_at),
         created_at: new Date(),
         updated_at: new Date(),
       });
-      console.log(`✨ Schedule creado para ${payload.property_url} (${payload.starts_at})`);
+      console.log(`✨ Schedule creado para ${payload.property_url}`);
     }
   }
 

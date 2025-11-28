@@ -9,6 +9,12 @@ const Auction = sequelize.define(
       autoIncrement: true,
       primaryKey: true,
     },
+    auction_uuid: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      allowNull: false,
+      unique: true,
+    },
     schedule_id: {
       type: DataTypes.INTEGER,
       allowNull: false,
@@ -36,11 +42,13 @@ const Auction = sequelize.define(
       allowNull: false,
       defaultValue: DataTypes.NOW,
     },
+    
   },
   {
     tableName: 'property_auctions',
     timestamps: false,
   }
+
 );
 
 module.exports = Auction;
