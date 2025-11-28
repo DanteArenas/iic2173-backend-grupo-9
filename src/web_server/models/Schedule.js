@@ -13,14 +13,6 @@ const Schedule = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: false,
     },
-    starts_at: {
-      type: DataTypes.DATE,
-      allowNull: false,
-    },
-    ends_at: {
-      type: DataTypes.DATE,
-      allowNull: false,
-    },
     price_clp: {
       type: DataTypes.INTEGER,
       allowNull: false,

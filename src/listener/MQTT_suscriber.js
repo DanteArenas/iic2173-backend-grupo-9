@@ -14,6 +14,8 @@ if (fs.existsSync(envPath)) {
 
 const Request = require('../web_server/models/Request');
 const Property = require('../web_server/models/Property');
+const Auction = require('../web_server/models/Auction');
+const Proposal = require('../web_server/models/ExchangeProposal');
 const sequelize = require('../web_server/database');
 const EventLog = require('../web_server/models/EventLog');
 const { ensureDbSchemaUpgrades } = require('../web_server/services/schemaService');
@@ -99,6 +101,7 @@ async function subscribeAllTopics() {
         subscribeWithRetry('properties/info'),
         subscribeWithRetry('properties/validation'),
         subscribeWithRetry('properties/requests-1'),
+        subscribeWithRetry('properties/auctions'),
     ]);
 }
 
@@ -264,13 +267,175 @@ client.on('message', async (topic, message) => {
                 console.log(`☑️ Request ${request_id} de grupo ${group_id} ya existía (IGNORADA).`);
                 // NO decrementes visitas ni loguees de nuevo si ya existía
             }
-            // 👆👆👆 FIN DEL REEMPLAZO 👆👆👆
+    
 
         } catch (err) {
             // Mejor log para identificar qué request falló
             const reqId = requestMsg ? requestMsg.request_id : 'desconocido';
             console.error(`Error procesando request ${reqId} de properties/requests:`, err);
         }
+    }
+    if (topic === 'properties/auctions') {
+    let msg;
+
+    try {
+        msg = JSON.parse(message.toString());
+        console.log("📩 Mensaje AUCTION recibido:", msg);
+    } catch (err) {
+        console.error("❌ Error parseando mensaje de auctions:", err);
+        return;
+    }
+
+    const {
+        auction_id,
+        proposal_id,
+        url,
+        timestamp,
+        quantity,
+        group_id,
+        operation
+    } = msg;
+
+    // Tu grupo
+    const myGroup = Number(process.env.GROUP_ID);
+
+    // ===================================================
+    // 1. OFFER → otro grupo subasta sus visitas
+    // ===================================================
+    if (operation === "offer") {
+
+        // Ignorar mis propias ofertas
+        if (group_id === myGroup) {
+        console.log("🔁 Offer propio, ignorado.");
+        return;
+        }
+
+        console.log("📥 Registrando offer de otro grupo…");
+
+        await Auction.findOrCreate({
+        where: { auction_id },
+        defaults: {
+            auction_id,
+            owner_group_id: group_id,
+            url,
+            quantity,
+            timestamp,
+            status: "OPEN",
+        }
+        });
+
+        await EventLog.create({
+        type: "AUCTION_OFFER_RECEIVED",
+        payload: msg,
+        });
+
+        return;
+    }
+
+    // ===================================================
+    // 2. PROPOSAL → otro grupo te ofrece un intercambio
+    // ===================================================
+    if (operation === "proposal") {
+
+        const auction = await Auction.findOne({ where: { auction_id }});
+        if (!auction) {
+        console.warn(`⚠️ Propuesta recibida para auction no existente (${auction_id}).`);
+        return;
+        }
+
+        // Si NO soy el dueño original de la subasta → la propuesta NO es para mi
+        if (auction.owner_group_id !== myGroup) {
+        console.log("📤 Proposal para otro grupo, ignorado.");
+        return;
+        }
+
+        console.log("📥 Registrando propuesta recibida…");
+
+        await Proposal.findOrCreate({
+        where: { proposal_id },
+        defaults: {
+            proposal_id,
+            auction_id,
+            from_group_id: group_id,
+            to_group_id: myGroup,
+            url,
+            quantity,
+            timestamp,
+            status: "PENDING"
+        }
+        });
+
+        await EventLog.create({
+        type: "AUCTION_PROPOSAL_RECEIVED",
+        payload: msg,
+        });
+
+        return;
+    }
+
+    // ===================================================
+    // 3. ACCEPTANCE → aceptaron tu propuesta
+    // ===================================================
+    if (operation === "acceptance") {
+
+        const proposal = await Proposal.findOne({ where: { proposal_id }});
+        if (!proposal) {
+        console.warn("⚠️ Acceptance de propuesta no registrada:", proposal_id);
+        return;
+        }
+
+        // Si YO soy el grupo que ofreció
+        if (proposal.from_group_id === myGroup) {
+        console.log("🎉 Una de mis propuestas fue ACEPTADA!");
+
+        await proposal.update({ status: "ACCEPTED" });
+
+        // Cerrar la subasta localmente
+        await Auction.update(
+            { status: "CLOSED" },
+            { where: { auction_id } }
+        );
+
+        await EventLog.create({
+            type: "AUCTION_PROPOSAL_ACCEPTED",
+            payload: msg,
+        });
+
+        // Aquí podrías actualizar tus reservas:
+        // +quantity para lo que recibiste
+        // -quantity para lo que ofreciste (si corresponde)
+
+        }
+
+        return;
+    }
+
+    // ===================================================
+    // 4. REJECTION → rechazaron tu propuesta
+    // ===================================================
+    if (operation === "rejection") {
+
+        const proposal = await Proposal.findOne({ where: { proposal_id }});
+        if (!proposal) {
+        console.warn("⚠️ Rejection de propuesta no registrada:", proposal_id);
+        return;
+        }
+
+        if (proposal.from_group_id === myGroup) {
+        console.log("❌ Mi propuesta fue rechazada.");
+
+        await proposal.update({ status: "REJECTED" });
+
+        await EventLog.create({
+            type: "AUCTION_PROPOSAL_REJECTED",
+            payload: msg,
+        });
+        }
+
+        return;
+    }
+
+    console.warn("⚠️ Operación desconocida en auctions:", operation);
     }
     
 });

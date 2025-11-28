@@ -9,10 +9,24 @@ const ExchangeProposal = sequelize.define(
       autoIncrement: true,
       primaryKey: true,
     },
+    proposal_uuid: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      allowNull: false,
+      unique: true,
+    },
+
+    // Debe matchear auction_uuid del auction original
+    auction_uuid: {
+      type: DataTypes.UUID,
+      allowNull: false,
+    },
+
     auction_id: {
       type: DataTypes.INTEGER,
       allowNull: false,
     },
+
     from_group_id: {
       type: DataTypes.INTEGER,
       allowNull: true,
