@@ -2312,9 +2312,8 @@ router.get('/reservations/:request_id/invoice', requireAuth, async (ctx) => {
     return;
   }
 
-  // redirigimos a la URL pública en S3
-  ctx.status = 302;
-  ctx.redirect(reqRow.invoice_url);
+  ctx.status = 200;
+  ctx.body = { url: reqRow.invoice_url };
 });
 
 // === NUEVO: helper interno para normalizar moneda a CLP ===
