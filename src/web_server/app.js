@@ -1,5 +1,5 @@
 // Envía métricas solo si New Relic está configurado (evita crash en local)
-try { require('newrelic'); } catch (e) { console.warn('New Relic not started:', e.message); }
+try { const newrelic = require('newrelic'); } catch (e) { console.warn('New Relic not started:', e.message); }
 
 const path = require('path');
 const fs = require('fs');
@@ -1269,127 +1269,133 @@ router.post('/properties', requireAuth, async (ctx) => {
 });
 
 router.get('/properties', async (ctx) => {
-  try {
-    const { page = 1, limit = 25, price, location, date, currency } =
-      ctx.query;
-    const pageNum = parseInt(page, 10);
-    const limitNum = parseInt(limit, 10);
-    if (
-      isNaN(pageNum) ||
-      pageNum < 1 ||
-      isNaN(limitNum) ||
-      limitNum < 1
-    ) {
-      ctx.status = 400;
-      ctx.body = {
-        error:
-          "Invalid pagination parameters: 'page' and 'limit' must be positive integers.",
-      };
-      return;
-    }
-    const offset = (pageNum - 1) * limitNum;
+  newrelic.startBackgroundTransaction('GET /properties', async () => {
+    const transactionNR = newrelic.getTransaction();
 
-    const whereClauses = {};
-    const andConditions = [];
-
-    if (price) {
-      const priceValue = parseFloat(price);
-      if (!isNaN(priceValue)) {
-        andConditions.push(
-          sequelize.where(
-            sequelize.cast(
-              sequelize.json('data.price'),
-              'numeric'
-            ),
-            { [Op.lte]: priceValue }
-          )
-        );
-        andConditions.push(
-          sequelize.where(
-            sequelize.json('data.currency'),
-            currency && currency.toUpperCase() === 'UF' ? 'UF' : 'CLP'
-          )
-        );
-      } else {
-        console.warn(`Invalid price filter value received: ${price}`);
+    try {
+      const { page = 1, limit = 25, price, location, date, currency } =
+        ctx.query;
+      const pageNum = parseInt(page, 10);
+      const limitNum = parseInt(limit, 10);
+      if (
+        isNaN(pageNum) ||
+        pageNum < 1 ||
+        isNaN(limitNum) ||
+        limitNum < 1
+      ) {
+        ctx.status = 400;
+        ctx.body = {
+          error:
+            "Invalid pagination parameters: 'page' and 'limit' must be positive integers.",
+        };
+        return;
       }
-    }
+      const offset = (pageNum - 1) * limitNum;
 
-    if (location) {
-      const searchTerm = String(location)
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '');
-      if (searchTerm) {
-        andConditions.push(
-          sequelize.where(
-            sequelize.fn(
-              'unaccent',
+      const whereClauses = {};
+      const andConditions = [];
+
+      if (price) {
+        const priceValue = parseFloat(price);
+        if (!isNaN(priceValue)) {
+          andConditions.push(
+            sequelize.where(
+              sequelize.cast(
+                sequelize.json('data.price'),
+                'numeric'
+              ),
+              { [Op.lte]: priceValue }
+            )
+          );
+          andConditions.push(
+            sequelize.where(
+              sequelize.json('data.currency'),
+              currency && currency.toUpperCase() === 'UF' ? 'UF' : 'CLP'
+            )
+          );
+        } else {
+          console.warn(`Invalid price filter value received: ${price}`);
+        }
+      }
+
+      if (location) {
+        const searchTerm = String(location)
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '');
+        if (searchTerm) {
+          andConditions.push(
+            sequelize.where(
               sequelize.fn(
-                'lower',
-                sequelize.json('data.location')
-              )
-            ),
-            { [Op.like]: `%${searchTerm}%` }
-          )
-        );
+                'unaccent',
+                sequelize.fn(
+                  'lower',
+                  sequelize.json('data.location')
+                )
+              ),
+              { [Op.like]: `%${searchTerm}%` }
+            )
+          );
+        }
       }
-    }
 
-    if (date) {
-      if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        andConditions.push(
-          sequelize.where(
-            sequelize.fn(
-              'DATE',
+      if (date) {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          andConditions.push(
+            sequelize.where(
+              sequelize.fn(
+                'DATE',
+                sequelize.cast(
+                  sequelize.json('data.timestamp'),
+                  'timestamp with time zone'
+                )
+              ),
+              date
+            )
+          );
+        } else {
+          console.warn(
+            `Invalid date filter value received (expected YYYY-MM-DD): ${date}`
+          );
+        }
+      }
+
+      if (andConditions.length > 0)
+        whereClauses[Op.and] = andConditions;
+
+      const { count, rows: properties } =
+        await Property.findAndCountAll({
+          where: whereClauses,
+          order: [
+            ['updated_at', 'DESC'],
+            [
               sequelize.cast(
                 sequelize.json('data.timestamp'),
                 'timestamp with time zone'
-              )
-            ),
-            date
-          )
-        );
-      } else {
-        console.warn(
-          `Invalid date filter value received (expected YYYY-MM-DD): ${date}`
-        );
-      }
-    }
-
-    if (andConditions.length > 0)
-      whereClauses[Op.and] = andConditions;
-
-    const { count, rows: properties } =
-      await Property.findAndCountAll({
-        where: whereClauses,
-        order: [
-          ['updated_at', 'DESC'],
-          [
-            sequelize.cast(
-              sequelize.json('data.timestamp'),
-              'timestamp with time zone'
-            ),
-            'DESC',
+              ),
+              'DESC',
+            ],
           ],
-        ],
-        limit: limitNum,
-        offset,
-      });
+          limit: limitNum,
+          offset,
+        });
 
-    ctx.body = {
-      totalItems: count,
-      totalPages: Math.ceil(count / limitNum),
-      currentPage: pageNum,
-      properties,
-    };
-  } catch (err) {
-    console.error('Error fetching properties:', err);
-    ctx.status = 500;
-    ctx.body = {
-      error: 'Internal server error fetching properties',
-    };
-  }
+      ctx.body = {
+        totalItems: count,
+        totalPages: Math.ceil(count / limitNum),
+        currentPage: pageNum,
+        properties,
+      };
+    } catch (err) {
+      console.error('Error fetching properties:', err);
+      ctx.status = 500;
+      ctx.body = {
+        error: 'Internal server error fetching properties',
+      };
+    } finally {
+      transactionNR.end();
+    }
+  });
 });
 
 router.get('/properties/:id', async (ctx) => {
@@ -1423,239 +1429,248 @@ router.get('/properties/:id', async (ctx) => {
 
 // ---- BUY (Webpay)
 router.post('/properties/buy', requireAuth, requireAdmin, async (ctx) => {
-  const { url } = ctx.request.body;
-
-  if (!url || typeof url !== 'string' || url.trim() === '') {
-    ctx.status = 400;
-    ctx.body = {
-      error: "Valid 'url' is required in the request body",
-    };
-    return;
-  }
-  const cleanUrl = url.trim();
-
-  let user;
-  let reservation_cost;
-  let property;
-  let requestId = uuidv4();
-  let buyOrder = `G9-${requestId.substring(0, 23)}`;
-
-  const transaction = await sequelize.transaction();
-
-  try {
-    console.log(
-      `🔄 [${requestId}] Processing buy request for URL: ${cleanUrl}`
-    );
-
+  newrelic.startBackgroundTransaction('POST /properties/buy', async () => {
+    const transactionNR = newrelic.getTransaction();
     try {
-      user = await getOrCreateUserFromToken(ctx.state.user || {});
-    } catch (err) {
-      console.error(
-        `❌ [${requestId}] Invalid token payload:`,
-        err.message
-      );
-      ctx.status = 400;
-      ctx.body = {
-        error: 'Invalid token payload',
-        message: err.message,
-      };
-      await transaction.rollback();
-      return;
-    }
-    console.log(` -> User ID: ${user.id}`);
+      const { url } = ctx.request.body;
 
-    property = await Property.findOne({
-      where: sequelize.where(
-        sequelize.json('data.url'),
-        cleanUrl
-      ),
-      lock: transaction.LOCK.UPDATE,
-      transaction,
-    });
-    if (!property) {
-      console.warn(
-        `❌ [${requestId}] Property not found for URL: ${cleanUrl}`
-      );
-      ctx.status = 404;
-      ctx.body = {
-        error: 'Property not found for the given URL',
-      };
-      await transaction.rollback();
-      return;
-    }
-    console.log(
-      ` -> Property ID: ${property.id}, Visits: ${property.visits}`
-    );
+      if (!url || typeof url !== 'string' || url.trim() === '') {
+        ctx.status = 400;
+        ctx.body = {
+          error: "Valid 'url' is required in the request body",
+        };
+        return;
+      }
+      const cleanUrl = url.trim();
 
-    if (property.visits <= 0) {
-      console.warn(
-        `❌ [${requestId}] No visits available for property ${property.id}`
-      );
-      ctx.status = 409;
-      ctx.body = {
-        error:
-          'No visits available for this property. It might have been reserved already.',
-      };
-      await transaction.rollback();
-      return;
-    }
+      let user;
+      let reservation_cost;
+      let property;
+      let requestId = uuidv4();
+      let buyOrder = `G9-${requestId.substring(0, 23)}`;
 
-    if (!property.data) {
-      throw new Error(
-        `Property ${property.id} found but has no data field`
-      );
-    }
-    reservation_cost = await computeReservationCost(property.data);
-    if (reservation_cost === null || reservation_cost <= 0) {
-      console.error(
-        `❌ [${requestId}] Invalid reservation cost for ${cleanUrl}: ${reservation_cost}`
-      );
-      throw new Error(
-        'Could not compute a valid reservation cost (must be > 0)'
-      );
-    }
-    console.log(
-      ` -> Reservation Cost: ${reservation_cost} CLP`
-    );
+      const transaction = await sequelize.transaction();
 
-    if (!WEBPAY_RETURN_URL) {
-      console.error(
-        '❌ FATAL: WEBPAY_RETURN_URL is not set!'
-      );
-      throw new Error(
-        'Server configuration error: Webpay return URL missing.'
-      );
-    }
-    try {
-      new URL(WEBPAY_RETURN_URL);
-    } catch {
-      throw new Error(
-        'WEBPAY_RETURN_URL must be an absolute URL'
-      );
-    }
+      try {
+        console.log(
+          `🔄 [${requestId}] Processing buy request for URL: ${cleanUrl}`
+        );
 
-    console.log(
-      `[DEBUG] Usando WEBPAY_RETURN_URL: ${WEBPAY_RETURN_URL}`
-    );
-    console.log(
-      `⏳ [${requestId}] Creating Webpay transaction buyOrder=${buyOrder}, amount=${reservation_cost}, returnUrl=${WEBPAY_RETURN_URL}`
-    );
+        try {
+          user = await getOrCreateUserFromToken(ctx.state.user || {});
+        } catch (err) {
+          console.error(
+            `❌ [${requestId}] Invalid token payload:`,
+            err.message
+          );
+          ctx.status = 400;
+          ctx.body = {
+            error: 'Invalid token payload',
+            message: err.message,
+          };
+          await transaction.rollback();
+          return;
+        }
+        console.log(` -> User ID: ${user.id}`);
 
-    const tx = await createTransaction(
-      buyOrder,
-      `user-${user.id}`,
-      reservation_cost,
-      WEBPAY_RETURN_URL
-    );
-    console.log(
-      `💳 [${requestId}] Webpay transaction created: token=${tx.token}`
-    );
+        property = await Property.findOne({
+          where: sequelize.where(
+            sequelize.json('data.url'),
+            cleanUrl
+          ),
+          lock: transaction.LOCK.UPDATE,
+          transaction,
+        });
+        if (!property) {
+          console.warn(
+            `❌ [${requestId}] Property not found for URL: ${cleanUrl}`
+          );
+          ctx.status = 404;
+          ctx.body = {
+            error: 'Property not found for the given URL',
+          };
+          await transaction.rollback();
+          return;
+        }
+        console.log(
+          ` -> Property ID: ${property.id}, Visits: ${property.visits}`
+        );
 
-    await Request.create(
-      {
-        request_id: requestId,
-        buy_order: buyOrder,
-        user_id: user.id,
-        property_url: cleanUrl,
-        amount_clp: reservation_cost,
-        status: 'PENDING',
-        deposit_token: tx.token,
-        retry_used: false,
-      },
-      { transaction }
-    );
-    console.log(
-      `💾 [${requestId}] Purchase request saved locally with status PENDING.`
-    );
+        if (property.visits <= 0) {
+          console.warn(
+            `❌ [${requestId}] No visits available for property ${property.id}`
+          );
+          ctx.status = 409;
+          ctx.body = {
+            error:
+              'No visits available for this property. It might have been reserved already.',
+          };
+          await transaction.rollback();
+          return;
+        }
 
-    await property.decrement('visits', { transaction });
-    console.log(
-      `🔽 [${requestId}] Visit decremented for property: ${cleanUrl}`
-    );
+        if (!property.data) {
+          throw new Error(
+            `Property ${property.id} found but has no data field`
+          );
+        }
+        reservation_cost = await computeReservationCost(property.data);
+        if (reservation_cost === null || reservation_cost <= 0) {
+          console.error(
+            `❌ [${requestId}] Invalid reservation cost for ${cleanUrl}: ${reservation_cost}`
+          );
+          throw new Error(
+            'Could not compute a valid reservation cost (must be > 0)'
+          );
+        }
+        console.log(
+          ` -> Reservation Cost: ${reservation_cost} CLP`
+        );
 
-    await transaction.commit();
-    console.log(
-      `✅ [${requestId}] DB Transaction committed.`
-    );
+        if (!WEBPAY_RETURN_URL) {
+          console.error(
+            '❌ FATAL: WEBPAY_RETURN_URL is not set!'
+          );
+          throw new Error(
+            'Server configuration error: Webpay return URL missing.'
+          );
+        }
+        try {
+          new URL(WEBPAY_RETURN_URL);
+        } catch {
+          throw new Error(
+            'WEBPAY_RETURN_URL must be an absolute URL'
+          );
+        }
 
-    try {
-      const mqttPayload = await sendPurchaseRequest(
-        cleanUrl,
-        reservation_cost,
-        user.id,
-        tx.token,
-        requestId,
-        buyOrder
-      );
-      console.log(
-        `📤 [${requestId}] Buy request sent via MQTT. Payload:`,
-        mqttPayload
-      );
-    } catch (mqttError) {
-      console.error(
-        `⚠️ [${requestId}] Failed to send purchase request via MQTT after DB commit:`,
-        mqttError
-      );
-    }
+        console.log(
+          `[DEBUG] Usando WEBPAY_RETURN_URL: ${WEBPAY_RETURN_URL}`
+        );
+        console.log(
+          `⏳ [${requestId}] Creating Webpay transaction buyOrder=${buyOrder}, amount=${reservation_cost}, returnUrl=${WEBPAY_RETURN_URL}`
+        );
 
-    ctx.status = 200;
-    ctx.body = {
-      message: 'Solicitud iniciada, redirigiendo a Webpay...',
-      webpay_url: tx.url,
-      webpay_token: tx.token,
-      request_id: requestId,
-      buy_order: buyOrder,
-    };
-  } catch (err) {
-    if (transaction && !transaction.finished) {
-      console.warn(
-        `[${requestId}] Rolling back DB transaction due to error.`
-      );
-      await transaction.rollback();
-    }
-    try {
-  // Buscar la request que podría haber quedado en PENDING
-  const reqRow = await Request.findOne({ where: { request_id: requestId } });
+        const tx = await createTransaction(
+          buyOrder,
+          `user-${user.id}`,
+          reservation_cost,
+          WEBPAY_RETURN_URL
+        );
+        console.log(
+          `💳 [${requestId}] Webpay transaction created: token=${tx.token}`
+        );
 
-  if (reqRow && reqRow.status === 'PENDING') {
-    await reqRow.update({
-      status: 'REJECTED',
-      reason: 'Internal Webpay error',
-      updated_at: new Date()
-    });
+        await Request.create(
+          {
+            request_id: requestId,
+            buy_order: buyOrder,
+            user_id: user.id,
+            property_url: cleanUrl,
+            amount_clp: reservation_cost,
+            status: 'PENDING',
+            deposit_token: tx.token,
+            retry_used: false,
+          },
+          { transaction }
+        );
+        console.log(
+          `💾 [${requestId}] Purchase request saved locally with status PENDING.`
+        );
 
-    // Restaurar visita
-    const prop = await Property.findOne({
-          where: sequelize.where(sequelize.json('data.url'), cleanUrl)
+        await property.decrement('visits', { transaction });
+        console.log(
+          `🔽 [${requestId}] Visit decremented for property: ${cleanUrl}`
+        );
+
+        await transaction.commit();
+        console.log(
+          `✅ [${requestId}] DB Transaction committed.`
+        );
+
+        try {
+          const mqttPayload = await sendPurchaseRequest(
+            cleanUrl,
+            reservation_cost,
+            user.id,
+            tx.token,
+            requestId,
+            buyOrder
+          );
+          console.log(
+            `📤 [${requestId}] Buy request sent via MQTT. Payload:`,
+            mqttPayload
+          );
+        } catch (mqttError) {
+          console.error(
+            `⚠️ [${requestId}] Failed to send purchase request via MQTT after DB commit:`,
+            mqttError
+          );
+        }
+
+        ctx.status = 200;
+        ctx.body = {
+          message: 'Solicitud iniciada, redirigiendo a Webpay...',
+          webpay_url: tx.url,
+          webpay_token: tx.token,
+          request_id: requestId,
+          buy_order: buyOrder,
+        };
+      } catch (err) {
+        if (transaction && !transaction.finished) {
+          console.warn(
+            `[${requestId}] Rolling back DB transaction due to error.`
+          );
+          await transaction.rollback();
+        }
+        try {
+      // Buscar la request que podría haber quedado en PENDING
+      const reqRow = await Request.findOne({ where: { request_id: requestId } });
+
+      if (reqRow && reqRow.status === 'PENDING') {
+        await reqRow.update({
+          status: 'REJECTED',
+          reason: 'Internal Webpay error',
+          updated_at: new Date()
         });
 
-        if (prop) {
-          await prop.increment('visits');
-          console.log(`✔️ Restored visit for property ${cleanUrl}`);
+        // Restaurar visita
+        const prop = await Property.findOne({
+              where: sequelize.where(sequelize.json('data.url'), cleanUrl)
+            });
+
+            if (prop) {
+              await prop.increment('visits');
+              console.log(`✔️ Restored visit for property ${cleanUrl}`);
+            }
+          }
+        } catch (e2) {
+          console.error('❌ Error while cleaning failed transaction:', e2.message);
         }
+
+        console.error(
+          `❌ Critical Error in /properties/buy for request ${requestId}:`,
+          {
+            message: err.message,
+            stack: err.stack,
+            url: cleanUrl,
+            userId: user ? user.id : 'N/A',
+            calculated_cost: reservation_cost,
+          }
+        );
+
+        ctx.status = err.status || 500;
+        ctx.body = {
+          error: 'Error processing purchase request',
+          details: err.message,
+          request_id: requestId,
+        };
       }
-    } catch (e2) {
-      console.error('❌ Error while cleaning failed transaction:', e2.message);
+    } finally {
+      transactionNR.addCustomAttribute('request_id', requestId);
+      transactionNR.addCustomAttribute('buy_order', buyOrder);
+      transactionNR.end();
     }
-
-    console.error(
-      `❌ Critical Error in /properties/buy for request ${requestId}:`,
-      {
-        message: err.message,
-        stack: err.stack,
-        url: cleanUrl,
-        userId: user ? user.id : 'N/A',
-        calculated_cost: reservation_cost,
-      }
-    );
-
-    ctx.status = err.status || 500;
-    ctx.body = {
-      error: 'Error processing purchase request',
-      details: err.message,
-      request_id: requestId,
-    };
-  }
+  });
 });
 
 // ---- RESERVATIONS LIST
@@ -2354,6 +2369,20 @@ router.get('/utils/uf', requireAuth, async (ctx) => {
   } catch (e) {
     ctx.status = 500;
     ctx.body = { error: 'UF error', message: e.message };
+  }
+});
+
+router.get('/health', async (ctx) => {
+  try {
+    // Verifica la conexión a la base de datos
+    await sequelize.authenticate();
+
+    ctx.status = 200;
+    ctx.body = { status: 'UP', message: 'Application is healthy' };
+  } catch (err) {
+    console.error('Health check failed:', err);
+    ctx.status = 500;
+    ctx.body = { status: 'DOWN', message: 'Application is not healthy', error: err.message };
   }
 });
 
