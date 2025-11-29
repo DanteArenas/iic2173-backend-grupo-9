@@ -25,13 +25,10 @@ console.log('Conectando al broker MQTT en %s\n', url);
 
 const client = mqtt.connect(url, options);
 
-// Optional: helper to await connection readiness
-let connected = false;
 let connectResolve;
 const connectedPromise = new Promise((resolve) => { connectResolve = resolve; });
 
 client.on('connect', () => {
-    connected = true;
     if (connectResolve) connectResolve();
     console.log('Conectado al broker desde mqttClient');
 });

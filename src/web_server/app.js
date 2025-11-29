@@ -68,7 +68,7 @@ const ADMIN_AUTH0_IDS = new Set(
 );
 const DEFAULT_GROUP_ID = Number.isFinite(Number(process.env.DEFAULT_GROUP_ID))
   ? Number(process.env.DEFAULT_GROUP_ID)
-  : null;
+  : 9;
 
 // ---- Usuario desde token Auth0
 const getOrCreateUserFromToken = async (tokenPayload) => {
@@ -721,7 +721,9 @@ router.post(
       await t.commit();
 
     } catch (e) {
-      try { await t.rollback(); } catch {}
+      try { await t.rollback(); } catch (rollbackErr) {
+        console.error('Failed to rollback transaction after /payments/webpay/return error:', rollbackErr);
+      }
       console.error('Return-user error:', e);
       ctx.status = 500;
       ctx.body = 'Internal error';
@@ -736,7 +738,7 @@ router.post(
 );
 
 router.get('/payments/webpay/return-user', async (ctx) => {
-  const { token_ws, TBK_TOKEN, TBK_ORDEN_COMPRA } = ctx.query;
+  const { token_ws } = ctx.query;
 
   // Igual que en retorno normal
   if (!token_ws) {
@@ -798,7 +800,9 @@ router.get('/payments/webpay/return-user', async (ctx) => {
     ctx.status = 302;
     ctx.redirect(`${FRONT}/reservations/${requestRow.request_id}?status=${statusParam}`);
   } catch (e) {
-    try { await t.rollback(); } catch {}
+    try { await t.rollback(); } catch (rollbackErr) {
+      console.error('Failed to rollback transaction after /payments/webpay/return-user GET error:', rollbackErr);
+    }
     console.error('GET return-user error:', e);
     ctx.status = 500;
     ctx.body = 'Internal error';
@@ -1127,8 +1131,8 @@ router.get("/admin/schedules/mine", requireAuth,requireAdmin, async (ctx) => {
 router.get('/workers/heartbeat', async (ctx) => {
   const t0 = Date.now();
   try {
-    const res = await _fetch(`${process.env.JOB_MASTER_URL}/heartbeat`, {
-      headers: { Authorization: `Bearer ${process.env.JOB_MASTER_TOKEN}` },
+    const res = await _fetch(`${JOB_MASTER_URL}/heartbeat`, {
+      headers: { Authorization: `Bearer ${JOB_MASTER_TOKEN}` },
     });
     const ok = res.ok;
     const t1 = Date.now();
@@ -2069,7 +2073,9 @@ router.post(
 
         await t.commit();
       } catch (e) {
-        try { await t.rollback(); } catch {}
+        try { await t.rollback(); } catch (rollbackErr) {
+          console.error('Failed to rollback transaction while processing /payments/webpay/return callback:', rollbackErr);
+        }
         throw e;
       }
 
@@ -2220,7 +2226,9 @@ router.get('/payments/webpay/return', async (ctx) => {
       } catch (err) {
         try {
           await t.rollback();
-        } catch {}
+        } catch (rollbackErr) {
+          console.error('Failed to rollback transaction for querystatus handler:', rollbackErr);
+        }
         throw err;
       }
 
@@ -2308,7 +2316,9 @@ router.get('/payments/webpay/return', async (ctx) => {
       } catch (err) {
         try {
           await t.rollback();
-        } catch {}
+        } catch (rollbackErr) {
+          console.error('Failed to rollback transaction for TBK fallback handler:', rollbackErr);
+        }
         throw err;
       }
     }
@@ -2392,28 +2402,6 @@ router.get('/reservations/:request_id/invoice', requireAuth, async (ctx) => {
   ctx.status = 200;
   ctx.body = { url: reqRow.invoice_url };
 });
-
-// === NUEVO: helper interno para normalizar moneda a CLP ===
-async function toClpAmount(price, currency, tsIso) {
-  const c = (currency || '').toString().trim().toUpperCase();
-  if (!Number.isFinite(Number(price))) return null;
-  const p = Number(price);
-
-  if (c === 'CLP' || c === '$' || c === '') return Math.round(p);
-
-  if (c === 'UF') {
-    try {
-      const v = await getUfValue(tsIso || new Date().toISOString());
-      if (!Number.isFinite(v) || v <= 0) return null;
-      return Math.round(p * v);
-    } catch {
-      return null;
-    }
-  }
-
-  // Moneda desconocida → no convertible
-  return null;
-}
 
 // === NUEVO: expone UF para el worker ===
 // GET /utils/uf?date=ISO_8601

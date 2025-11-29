@@ -35,7 +35,7 @@ if (typeof _fetch !== 'function') {
   try {
     const { fetch: undiciFetch } = require('undici');
     _fetch = undiciFetch;
-  } catch (_) {
+  } catch {
     throw new Error('Fetch API not available. Install undici or use Node 18+');
   }
 }

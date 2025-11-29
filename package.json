@@ -1,0 +1,14 @@
+{
+  "name": "iic2173-backend-grupo-9",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "lint": "eslint .",
+    "test": "npm run test --prefix boletas-serverless"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0"
+  }
+}

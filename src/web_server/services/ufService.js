@@ -21,7 +21,7 @@ const formatMonthKey = dateInput => {
 const safeFormatMonthKey = dateInput => {
     try {
         return formatMonthKey(dateInput);
-    } catch (err) {
+    } catch {
         return formatMonthKey(new Date().toISOString());
     }
 };

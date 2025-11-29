@@ -208,7 +208,7 @@ client.on('message', async (topic, message) => {
             requestMsg = JSON.parse(message.toString());
             console.log("📩 Request recibida:", requestMsg);
 
-            const { request_id, group_id, url, operation, amount_clp } = requestMsg; // Extraer amount_clp si viene
+            const { request_id, group_id, url, amount_clp } = requestMsg; // Extraer amount_clp si viene
 
             // Validar que request_id existe
             if (!request_id) {
@@ -224,7 +224,7 @@ client.on('message', async (topic, message) => {
             console.log(` Request de otro grupo (${group_id}), registrando...`);
 
             // 👇👇👇 REEMPLAZO CON findOrCreate 👇👇👇
-            const [request, created] = await Request.findOrCreate({
+            const [, created] = await Request.findOrCreate({
                 where: { request_id: request_id }, // Busca por el ID único
                 defaults: { // Datos a usar SOLO si NO se encuentra y se debe crear
                     property_url: url,

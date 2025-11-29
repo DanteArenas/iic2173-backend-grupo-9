@@ -50,7 +50,11 @@ async function withFibonacciRetry(fn, opts = {}) {
                 delay += Math.floor(Math.random() * jitterMs);
             }
             if (typeof onAttempt === 'function') {
-                try { onAttempt({ attempt, delay, error: err }); } catch (_) { }
+                try {
+                    onAttempt({ attempt, delay, error: err });
+                } catch (hookErr) {
+                    console.warn('withFibonacciRetry onAttempt handler threw:', hookErr);
+                }
             }
             await sleep(delay);
         }
