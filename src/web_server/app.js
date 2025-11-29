@@ -304,12 +304,60 @@ app.use(async (ctx, next) => {
 });
 
 // ---- Helpers de validación + precio
+const detectCurrencyFromPriceString = (raw) => {
+  if (typeof raw !== 'string') return null;
+  const upper = raw.toUpperCase();
+  if (upper.includes('UF')) return 'UF';
+  if (upper.includes('CLP') || upper.includes('$') || upper.includes('PESO')) return 'CLP';
+  return null;
+};
+
+const parsePriceValue = (raw) => {
+  if (typeof raw === 'number') return raw;
+  if (raw === null || raw === undefined) return NaN;
+
+  const asString = String(raw).trim();
+  if (!asString) return NaN;
+
+  let numericPart = asString.replace(/[^0-9,.-]/g, '');
+  if (!numericPart) return NaN;
+
+  numericPart = numericPart.replace(/\s+/g, '');
+  numericPart = numericPart.replace(/\.(?=\d{3}(?:\D|$))/g, '');
+  numericPart = numericPart.replace(/,(?=\d{3}(?:\D|$))/g, '');
+
+  const lastComma = numericPart.lastIndexOf(',');
+  const lastDot = numericPart.lastIndexOf('.');
+
+  if (lastComma > lastDot) {
+    numericPart = numericPart.replace(/\./g, '').replace(',', '.');
+  } else if (lastDot > lastComma) {
+    numericPart = numericPart.replace(/,/g, '');
+  } else if (lastComma !== -1) {
+    numericPart = numericPart.replace(',', '.');
+  } else {
+    numericPart = numericPart.replace(/,/g, '');
+  }
+
+  if (
+    numericPart === '' ||
+    numericPart === '.' ||
+    numericPart === '-' ||
+    numericPart === '-.'
+  ) {
+    return NaN;
+  }
+
+  return Number(numericPart);
+};
+
 const validatePropertyPayload = (payload) => {
   const errors = [];
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return { isValid: false, errors: ['Request body must be a JSON object'] };
   }
   const sanitized = { ...payload };
+  let inferredCurrencyFromPrice = null;
 
   // url
   if (typeof payload.url !== 'string' || payload.url.trim() === '') {
@@ -348,10 +396,14 @@ const validatePropertyPayload = (payload) => {
 
   // price (opcional)
   if (payload.price !== undefined && payload.price !== null && payload.price !== '') {
-    let priceValue = payload.price;
-    if (typeof priceValue === 'string')
-      priceValue = priceValue.trim().replace(/[$.]/g, '');
-    const parsedPrice = Number(priceValue);
+    let parsedPrice;
+    if (typeof payload.price === 'string') {
+      inferredCurrencyFromPrice =
+        detectCurrencyFromPriceString(payload.price) || inferredCurrencyFromPrice;
+      parsedPrice = parsePriceValue(payload.price);
+    } else {
+      parsedPrice = Number(payload.price);
+    }
     if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
       errors.push('`price` must be a non-negative number when provided');
     } else {
@@ -370,10 +422,12 @@ const validatePropertyPayload = (payload) => {
       if (sanitized.currency === '$') sanitized.currency = 'CLP';
     }
   } else if (sanitized.price !== null) {
-    sanitized.currency = 'CLP';
-    console.warn(
-      `⚠️ Currency not provided for price ${sanitized.price}, assuming CLP.`
-    );
+    sanitized.currency = inferredCurrencyFromPrice || 'CLP';
+    if (!inferredCurrencyFromPrice) {
+      console.warn(
+        `⚠️ Currency not provided for price ${sanitized.price}, assuming CLP.`
+      );
+    }
   } else {
     sanitized.currency = null;
   }
@@ -1237,6 +1291,7 @@ router.post('/properties', requireAuth, async (ctx) => {
       const updates = {
         visits: sequelize.literal('visits + 1'),
         updated_at: propertyData.timestamp,
+        data: propertyData,
       };
       if (reservationCost !== null)
         updates.reservation_cost = reservationCost;
@@ -1505,10 +1560,32 @@ router.post('/properties/buy', requireAuth, async (ctx) => {
         `Property ${property.id} found but has no data field`
       );
     }
-    reservation_cost = await computeReservationCost(property.data);
-    if (reservation_cost === null || reservation_cost <= 0) {
+    const computedCost = await computeReservationCost(property.data);
+    if (computedCost !== null && computedCost > 0) {
+      reservation_cost = computedCost;
+      if (
+        typeof property.reservation_cost !== 'number' ||
+        Math.round(property.reservation_cost) !== reservation_cost
+      ) {
+        await property.update(
+          { reservation_cost },
+          { transaction }
+        );
+      }
+    } else if (
+      typeof property.reservation_cost === 'number' &&
+      Number.isFinite(property.reservation_cost) &&
+      property.reservation_cost > 0
+    ) {
+      reservation_cost = Math.round(property.reservation_cost);
+      console.warn(
+        `⚠️ [${requestId}] Falling back to stored reservation_cost for ${cleanUrl}: ${reservation_cost}`
+      );
+    } else {
+      const debugCost =
+        computedCost !== null ? computedCost : property.reservation_cost;
       console.error(
-        `❌ [${requestId}] Invalid reservation cost for ${cleanUrl}: ${reservation_cost}`
+        `❌ [${requestId}] Invalid reservation cost for ${cleanUrl}: ${debugCost}`
       );
       throw new Error(
         'Could not compute a valid reservation cost (must be > 0)'
