@@ -1422,7 +1422,7 @@ router.get('/properties/:id', async (ctx) => {
 });
 
 // ---- BUY (Webpay)
-router.post('/properties/buy', requireAuth, requireAdmin, async (ctx) => {
+router.post('/properties/buy', requireAuth, async (ctx) => {
   const { url } = ctx.request.body;
 
   if (!url || typeof url !== 'string' || url.trim() === '') {
