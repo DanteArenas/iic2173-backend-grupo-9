@@ -53,7 +53,8 @@ services:
     volumes:
       - ./src/listener:/app
       - ./src/web_server:/web_server
-      - /app/node_modules  # evita perder dependencias (como newrelic)
+      - listener_node_modules:/app/node_modules  # evita perder dependencias (como newrelic)
+      - listener_node_modules:/web_server/node_modules  # expose installed deps to /web_server requires
   # ------------------------
   # Web Server principal (API)
   # ------------------------
@@ -105,6 +106,8 @@ services:
 # --------------------------
 volumes:
   postgres_data:
+
+  listener_node_modules:
 
 networks:
   app-network:
