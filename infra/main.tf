@@ -1,13 +1,13 @@
 provider "aws" {
-  region  = "us-east-2"
-  profile = "terraform"
+  region  = var.aws_region
+  profile = var.aws_profile
 }
 
 # Provider para la otra cuenta (usar el profile configurado: yampai_aws)
 provider "aws" {
   alias   = "yampai"
-  region  = "us-east-1"
-  profile = "yampai_aws"
+  region  = var.yampai_aws_region
+  profile = var.yampai_aws_profile
 }
 
 

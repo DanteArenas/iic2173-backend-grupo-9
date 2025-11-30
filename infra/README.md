@@ -107,4 +107,66 @@ terraform apply -var-file=dev.tfvars
 Notas finales
 -------------
 - El valor por defecto `env = "dev"` es un ejemplo y se usa en `main.tf` para `stage_name` del API Gateway. Cámbielo a `prod` u otro entorno según su flujo de trabajo.
-- Puedo generar `terraform.tfvars.example` y/o ajustar el README con ejemplos por entorno si lo desea.
+
+**Yampai Services**
+
+- **Propósito**: Este módulo (`modules/yampai_services`) gestiona recursos que residen en la cuenta de Yampai. Actualmente contiene recursos importados (instancia EC2 de los workers worker) y un bucket S3 que almacena boletas.
+- **Proveedor / Cuenta**: El módulo se aplica usando un provider alias (`provider "aws" { alias = "yampai" ... }`) y en `infra/main.tf` se mapea ese provider al módulo con `providers = { aws = aws.yampai }`. Esto permite gestionar recursos en otra cuenta sin cambiar el provider global.
+
+**Recursos principales**
+- **Instancia EC2**: Recurso `aws_instance` definidos en el módulo (`aws_instance.worker_i_03d284aaa415f72b7`) que representan workers ya existentes en la cuenta externa. Sus atributos esenciales (AMI, type, subnet, security group) están fijados según la instancia importada.
+- **Bucket S3 de boletas**: Recurso `aws_s3_bucket.boletas` cuyo nombre se toma desde la variable `boletas_bucket_name`.
+
+**Variables importantes**
+- `boletas_bucket_name` (string): Nombre del bucket S3 en la cuenta externa.
+- `worker_ids` (list(string)): Lista con los IDs de instancias EC2 que se pueden importar (opcional, se usa para documentar/esperar los IDs).
+- `env` (string): Nombre del entorno (ej. `dev`, `prod`).
+
+**Outputs**
+- `worker_ids`: (passthrough) lista de IDs definida por la variable `worker_ids`.
+- `boletas_bucket_name`: nombre del bucket S3 expuesto por el módulo.
+
+**Flujo IaC y pasos para usar el módulo `yampai_services`**
+
+1. Configurar provider alias para la cuenta externa en `infra/main.tf` (ya existe un provider `aws` con `alias = "yampai"`).
+2. En la invocación del módulo, mapear el provider: `providers = { aws = aws.yampai }`.
+3. Ajustar variables del módulo en `infra/main.tf` (por ejemplo: `boletas_bucket_name`, `env`).
+4. Inicializar Terraform en el directorio `infra`:
+
+```bash
+cd infra
+terraform init
+```
+
+5. (Recomendado) Revisar con `terraform plan -var="env=<env>"` para validar que la configuración HCL refleja la infraestructura esperada.
+
+6. Importar recursos existentes desde la cuenta externa a la configuración de Terraform (ejemplos):
+
+- Importar una instancia EC2 en el módulo. Reemplace `<instance_id>` por el ID real y ajuste el nombre del recurso si fuera distinto:
+
+```bash
+terraform import 'module.external_services.aws_instance.worker_i_03d284aaa415f72b7' <instance_id> --provider=aws.yampai
+```
+
+- Importar el bucket S3 (usar el nombre real del bucket):
+
+```bash
+terraform import 'module.external_services.aws_s3_bucket.boletas' <boletas_bucket_name> --provider=aws.yampai
+```
+
+Notas sobre import:
+- Use el flag `--provider=aws.yampai` para señalar que el recurso reside en la cuenta externa manejada por el provider alias.
+- Tras cada import, ejecute `terraform plan` y ajuste la HCL si Terraform detecta diferencias en atributos gestionados.
+
+**Consideraciones operativas**
+- Los recursos importados en el módulo usan un bloque `lifecycle { ignore_changes = [tags] }` para evitar sobrescribir etiquetas que puedan cambiar fuera de Terraform; ajuste según sus políticas.
+- Se recomienda mantener un `terraform.tfstate` remoto (S3 + DynamoDB lock) por equipo y por cada cuenta/entorno para evitar corrupciones de estado.
+- Documente en un archivo `terraform.tfvars` (fuera del repositorio) los valores sensibles/propios de cada cuenta (por ejemplo, `boletas_bucket_name`).
+
+**Ejemplo rápido de verificación**
+
+1. `terraform init`
+2. `terraform plan -var="env=dev"`
+3. Si necesita traer recursos existentes: ejecutar los `terraform import` anteriores especificando `--provider=aws.yampai`.
+
+
