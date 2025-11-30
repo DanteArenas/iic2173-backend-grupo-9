@@ -144,25 +144,39 @@ client.on('message', async (topic, message) => {
 
     if (topic === 'properties/validation') {
         let validation;
-        let requestId;
-        let status;
         let relatedRequestId = null;
+
         try {
-            validation = JSON.parse(message.toString());
-            if (String(validation.group_id) === String(process.env.GROUP_ID)) {
-             console.log(`🛑 Validación propia recibida (${validation.request_id}). Ignorando update de BD para evitar bucle.`);
-             return; 
-        }
+            // 1. PARSEAR
+            const msgString = message.toString();
+            validation = JSON.parse(msgString);
 
-            console.log('📩 Validación recibida:', validation);
+            // --- DEBUG: VER QUÉ ESTAMOS COMPARANDO ---
+            const incomingGroup = String(validation.group_id || '');
+            const myGroup = String(process.env.GROUP_ID || '');
+            
+            console.log(`🔍 DEBUG VALIDATION: Recibido='${incomingGroup}' vs Mío='${myGroup}'`);
 
-            requestId = validation.request_id;
-            status = validation.status;
+            // 2. ROMPER BUCLE (Lógica Reforzada)
+            // Si el mensaje viene de mi grupo (9) O si viene sin grupo válido (0 o vacío), frenamos.
+            if (incomingGroup === myGroup || incomingGroup === '0' || incomingGroup === '') {
+                console.log(`🛑 Validación ignorada para evitar bucle (ID Request: ${validation.request_id})`);
+                return; 
+            }
+
+            console.log('📩 Validación recibida (Procesando):', validation);
+
+            const requestId = validation.request_id;
+            const status = validation.status;
             const { reason } = validation;
 
+            // 3. ACTUALIZAR BD
             const request = await Request.findOne({ where: { request_id: requestId } });
+            
             if (request) {
                 relatedRequestId = requestId;
+                
+                // Actualizar Request
                 await request.update({
                     status: status.toUpperCase(),
                     reason: Array.isArray(reason) 
@@ -170,9 +184,9 @@ client.on('message', async (topic, message) => {
                         : (typeof reason === 'object' ? JSON.stringify(reason) : reason),
                     updated_at: new Date(),
                 });
-                console.log(`🔄 Request ${requestId} actualizado con estado ${status}`);
+                console.log(`🔄 Request ${requestId} actualizado a ${status}`);
 
-                // 👇 Ajustar visitas según resultado de la validación
+                // Actualizar Property (Visitas)
                 const property = await Property.findOne({
                     where: sequelize.where(
                         sequelize.json('data.url'),
@@ -181,27 +195,40 @@ client.on('message', async (topic, message) => {
                 });
 
                 if (property) {
-                    if (status.toUpperCase() === "REJECTED" || status.toUpperCase() === "ERROR") {
+                    if (['REJECTED', 'ERROR'].includes(status.toUpperCase())) {
                         await property.update({ visits: property.visits + 1 });
-                        console.log(`♻️ Visita devuelta para propiedad ${request.property_url}`);
-                    } else if (status.toUpperCase() === "ACCEPTED") {
-                        console.log(`✅ Visita confirmada para propiedad ${request.property_url}`);
+                        console.log(`♻️ Visita devuelta: ${request.property_url}`);
+                    } else if (status.toUpperCase() === 'ACCEPTED') {
+                        console.log(`✅ Visita confirmada: ${request.property_url}`);
                     }
                 }
-            } else if (!missingRequestWarnings.has(requestId)) {
-                missingRequestWarnings.add(requestId);
-                console.warn(`⚠️ Request ${requestId} no encontrado en DB (probablemente pertenece a otro grupo o llegó sin request previo).`);
+            } else {
+                if (!missingRequestWarnings.has(requestId)) {
+                    missingRequestWarnings.add(requestId);
+                    console.warn(`⚠️ Request ${requestId} no encontrada en DB local.`);
+                }
             }
-        } catch (err) {
-            console.error('❌ Error procesando validación:', err);
-        }
 
-        if (validation && status) {
-            await EventLog.create({
-                type: `VALIDATION_${status.toUpperCase()}`,
-                payload: validation,
-                related_request_id: relatedRequestId || null,
-            });
+            // 4. GUARDAR EVENT LOG (Con parche ENUM)
+            if (validation && status) {
+                let logEventType = `VALIDATION_${status.toUpperCase()}`;
+                if (status.toUpperCase() === 'OK') {
+                    logEventType = 'VALIDATION_ACCEPTED';
+                }
+
+                try {
+                    await EventLog.create({
+                        type: logEventType,
+                        payload: validation,
+                        related_request_id: relatedRequestId || null,
+                    });
+                } catch (logErr) {
+                    console.warn("⚠️ Error guardando EventLog (no crítico):", logErr.message);
+                }
+            }
+
+        } catch (err) {
+            console.error('❌ Error procesando mensaje de validación:', err);
         }
     }
 
