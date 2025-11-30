@@ -3,6 +3,14 @@ provider "aws" {
   profile = "terraform"
 }
 
+# Provider para la otra cuenta (usar el profile configurado: yampai_aws)
+provider "aws" {
+  alias   = "yampai"
+  region  = "us-east-1"
+  profile = "yampai_aws"
+}
+
+
 ###############################
 # 1. MÓDULO DE VPC (USANDO TUS IDS REALES)
 ###############################
@@ -47,4 +55,17 @@ module "api_gateway" {
   aws_region = var.aws_region
   stage_name = var.env
   env        = var.env
+}
+
+###############################
+# 4. MÓDULO: RECURSOS EN OTRA CUENTA (EC2 workers + S3 boletas)
+###############################
+module "external_services" {
+  source = "./modules/yampai_services"
+  providers = {
+    aws = aws.yampai
+  }
+
+  env                 = var.env
+  boletas_bucket_name = "boletas-boletas-dev-504956989578-us-east-1"
 }
