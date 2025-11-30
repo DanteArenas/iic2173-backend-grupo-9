@@ -149,6 +149,11 @@ client.on('message', async (topic, message) => {
         let relatedRequestId = null;
         try {
             validation = JSON.parse(message.toString());
+            if (String(validation.group_id) === String(process.env.GROUP_ID)) {
+             console.log(`🛑 Validación propia recibida (${validation.request_id}). Ignorando update de BD para evitar bucle.`);
+             return; 
+        }
+
             console.log('📩 Validación recibida:', validation);
 
             requestId = validation.request_id;

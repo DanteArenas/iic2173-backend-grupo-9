@@ -705,7 +705,6 @@ router.post(
 
       // 3) Si ACCEPTED → transferir schedule al usuario
       if (mapped === 'ACCEPTED') {
-        await ensureInvoiceForRequestRow(requestRow)
         const schedule = await Schedule.findByPk(requestRow.schedule_id);
 
         await schedule.update(
@@ -781,7 +780,6 @@ router.get('/payments/webpay/return-user', async (ctx) => {
     
     // Transferencia del schedule
     if (mapped === 'ACCEPTED') {
-      await ensureInvoiceForRequestRow(requestRow)
       const schedule = await Schedule.findByPk(requestRow.schedule_id);
 
       await schedule.update(
